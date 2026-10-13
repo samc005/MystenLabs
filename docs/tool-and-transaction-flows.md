@@ -69,7 +69,7 @@ sequenceDiagram
     else User rejects
         User->>Wallet: Reject
         Wallet-->>MCP: Approval rejected
-        MCP-->>AI: Rejected; transaction not submitted
+        MCP-->>AI: Rejected, transaction not submitted
         AI-->>User: Report rejection
     end
 ```
