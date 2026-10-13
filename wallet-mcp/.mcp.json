@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "wallet": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["build/index.js"]
+    }
+  }
+}

@@ -1,15 +1,7 @@
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
-import { SUI_TYPE_ARG, normalizeStructTag } from "@mysten/sui/utils";
-
-export interface TokenBalance {
-  coinType: string;
-  symbol: string;
-  decimals: number;
-  /** Raw on-chain amount in the coin's smallest unit (e.g. MIST for SUI). */
-  raw: bigint;
-  /** Human-readable amount, e.g. "1.5". */
-  formatted: string;
-}
+import { SUI_DECIMALS, SUI_TYPE_ARG, normalizeStructTag } from "@mysten/sui/utils";
+import type { SuiNetwork } from "./client.js";
+import type { TokenBalance } from "./types.js";
 
 /** Converts a raw integer amount into a decimal string without floating-point loss. */
 export function formatUnits(raw: bigint, decimals: number): string {
@@ -26,6 +18,16 @@ async function describeBalance(
   coinType: string,
   raw: bigint,
 ): Promise<TokenBalance> {
+  if (normalizeStructTag(coinType) === normalizeStructTag(SUI_TYPE_ARG)) {
+    return {
+      coinType,
+      symbol: "SUI",
+      decimals: SUI_DECIMALS,
+      raw,
+      formatted: formatUnits(raw, SUI_DECIMALS),
+    };
+  }
+
   const { coinMetadata } = await client.getCoinMetadata({ coinType });
   const decimals = coinMetadata?.decimals ?? 0;
   const symbol = coinMetadata?.symbol ?? coinType.split("::").pop() ?? coinType;
@@ -42,10 +44,7 @@ export async function getBalance(
 }
 
 /** Every coin type the address holds, SUI first, then by symbol. */
-export async function getAllBalances(
-  client: SuiGrpcClient,
-  owner: string,
-): Promise<TokenBalance[]> {
+export async function getAllBalances(client: SuiGrpcClient, owner: string): Promise<TokenBalance[]> {
   const entries: { coinType: string; balance: string }[] = [];
   let page = await client.listBalances({ owner, limit: 50 });
   while (true) {
@@ -55,7 +54,7 @@ export async function getAllBalances(
   }
 
   const balances = await Promise.all(
-    entries.map((b) => describeBalance(client, b.coinType, BigInt(b.balance))),
+    entries.map((entry) => describeBalance(client, entry.coinType, BigInt(entry.balance))),
   );
 
   const sui = normalizeStructTag(SUI_TYPE_ARG);
@@ -65,4 +64,21 @@ export async function getAllBalances(
     if (aIsSui !== bIsSui) return aIsSui ? -1 : 1;
     return a.symbol.localeCompare(b.symbol);
   });
+}
+
+export function formatBalanceReport(
+  network: SuiNetwork,
+  owner: string,
+  balances: TokenBalance[],
+): string {
+  const lines = [`Network: ${network}`, `Address: ${owner}`];
+  if (balances.length === 0) {
+    lines.push("No coins found.");
+    return lines.join("\n");
+  }
+  lines.push("Balances:");
+  for (const balance of balances) {
+    lines.push(`  ${balance.formatted} ${balance.symbol}  (${balance.coinType})`);
+  }
+  return lines.join("\n");
 }

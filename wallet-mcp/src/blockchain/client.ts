@@ -13,6 +13,10 @@ export function isSuiNetwork(value: string): value is SuiNetwork {
   return value in FULLNODE_URLS;
 }
 
+export function fullnodeUrl(network: SuiNetwork): string {
+  return FULLNODE_URLS[network];
+}
+
 export function createSuiClient(network: SuiNetwork = "testnet"): SuiGrpcClient {
   return new SuiGrpcClient({ network, baseUrl: FULLNODE_URLS[network] });
 }
