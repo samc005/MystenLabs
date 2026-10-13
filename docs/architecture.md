@@ -1,12 +1,10 @@
 # System Architecture
 
-Source: [overall architecture image](IMG_8992.png).
-
 ## Intent
 
 A user expresses an asset operation in natural language, such as “Send 2 SUI to Bob.” Claude or another AI interprets the request and invokes an MCP tool. The MCP server validates and orchestrates the request, while a TypeScript blockchain service builds transactions and queries Sui. A wallet presents transactions for approval and signs authorized transactions. A Move smart contract on Sui Testnet enforces spending limits, recipient restrictions, and authorization rules.
 
-## Layers shown in the image
+## System layers
 
 ```mermaid
 flowchart TD
@@ -20,9 +18,9 @@ flowchart TD
     end
 ```
 
-This reproduces the conceptual transaction path. Balance reads query Sui through the blockchain service without requiring a signature. The image does not specify which component submits signed transactions; the flow document proposes the blockchain service as that component.
+This diagram shows the conceptual transaction path. Balance reads query Sui through the blockchain service without requiring a signature. The [transaction flow design](tool-and-transaction-flows.md) proposes the blockchain service as the component that submits signed transactions; submission ownership remains an open decision.
 
-| Layer | Responsibility shown in the image | Proposed boundary |
+| Layer | Responsibility | Proposed boundary |
 | --- | --- | --- |
 | User | Requests an operation | Reviews concrete transaction details before signing |
 | Claude / AI | Interprets intent and calls MCP tools | Supplies structured intent; does not hold signing keys |
@@ -35,15 +33,15 @@ This reproduces the conceptual transaction path. Balance reads query Sui through
 
 Natural-language interpretation produces a request, not transaction authorization. The MCP server should validate the structured request independently of the model's interpretation.
 
-Wallet approval should show the network, sender, resolved recipient address, asset, amount, and available fee information. The wallet must sign the same transaction that was presented for review. The signing integration and its transport are unspecified in the images.
+Wallet approval should show the network, sender, resolved recipient address, asset, amount, and available fee information. The wallet must sign the same transaction that was presented for review. The signing integration and its transport remain open design decisions.
 
 The Move contract can enforce rules only for operations that invoke it and use assets or capabilities under its control. A direct wallet transfer could bypass that policy. Before implementation, choose how assets are controlled and how every policy-governed transfer reaches the contract.
 
 ## Configuration and state
 
-The reference architecture targets Sui Testnet. Proposed runtime configuration includes the network endpoint, expected network, and any Move package or policy object identifiers. Wallet secrets belong to the signing layer and should not be part of tool arguments or model context.
+The architecture targets Sui Testnet. Proposed runtime configuration includes the network endpoint, expected network, and any Move package or policy object identifiers. Wallet secrets belong to the signing layer and should not be part of tool arguments or model context.
 
-The images do not define persistent server state. If approval or execution spans multiple tool calls, the system will need an operation record connecting the request, prepared transaction, approval, submission, and final result.
+Persistent server state remains an open design decision. If approval or execution spans multiple tool calls, the system will need an operation record connecting the request, prepared transaction, approval, submission, and final result.
 
 ## Decisions needed before implementation
 

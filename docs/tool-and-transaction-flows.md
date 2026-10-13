@@ -1,8 +1,6 @@
 # Tool and Transaction Flows
 
-Sources: [architecture image](IMG_8992.png) and [project layout image](IMG_8589.png).
-
-The following flows and schemas elaborate on the images. They are proposed interfaces, not existing API contracts.
+The following flows and schemas describe proposed interfaces for the [system architecture](architecture.md), not existing API contracts.
 
 ## Balance query
 
@@ -38,7 +36,7 @@ Proposed output fields: `network`, `address`, `coinType`, `amountBaseUnits`, and
 
 ## Transfer
 
-The following flow proposes that the blockchain service submits the signed transaction. The image establishes approval and signing, but does not assign submission ownership.
+The following flow proposes that the blockchain service submits the signed transaction after wallet approval and signing. Submission ownership remains an open design decision.
 
 ```mermaid
 sequenceDiagram
@@ -76,7 +74,7 @@ sequenceDiagram
     end
 ```
 
-Recipient resolution is not defined in the images. A transfer must use a concrete address; an ambiguous name should trigger clarification before transaction preparation. The sender comes from the selected wallet/account, and the network comes from validated runtime configuration.
+The recipient resolution mechanism remains an open design decision. A transfer must use a concrete address; an ambiguous name should trigger clarification before transaction preparation. The sender comes from the selected wallet/account, and the network comes from validated runtime configuration.
 
 Illustrative input:
 

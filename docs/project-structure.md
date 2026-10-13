@@ -1,8 +1,6 @@
 # TypeScript Project Structure
 
-Source: [project layout image](IMG_8589.png).
-
-## Reference layout
+## Proposed layout
 
 ```text
 wallet-mcp/
@@ -29,7 +27,7 @@ wallet-mcp/
 
 ## Proposed module responsibilities
 
-The filenames above come from the image. The responsibilities below are a proposed interpretation of that layout.
+The following responsibilities describe the proposed modules in this layout.
 
 | File | Responsibility |
 | --- | --- |
@@ -63,13 +61,13 @@ flowchart LR
 
 Keep MCP protocol details in `mcp/` and chain-specific transaction/query logic in `blockchain/`. Construct dependencies at startup and pass them to the modules that need them. This allows tool validation and blockchain behavior to be verified separately.
 
-## Missing components in the reference layout
+## Additional components to design
 
-The architecture includes a wallet/signing layer and a Move contract, but the directory image does not show their implementations. Proposed additions, once the integration decisions are made, are:
+The architecture includes a wallet/signing layer and a Move contract whose implementations are not yet specified in the proposed layout. Once the integration decisions are made, add:
 
 - `src/wallet/`: approval and signing interfaces plus the chosen wallet adapter.
 - A Move package directory or a separately maintained contract repository: policy implementation and contract tests.
 - Operation storage: needed if approval and execution continue asynchronously.
 - A swap tool and service module: needed before advertising swap as implemented.
 
-These additions are design suggestions, not files present in the reference image or claims about the current repository.
+This layout and its additions describe the intended design rather than the current repository contents.
