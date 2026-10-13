@@ -42,10 +42,20 @@ Hello MCP server running on stdio
 
 The server then waits silently for a client. That is correct. Stop it with Ctrl+C.
 
+## Use with Claude Code (team setup)
+
+The repo includes a `.mcp.json` that registers this server with Claude Code. Each teammate uses their own Claude account; nothing is shared except the code.
+
+1. Run the setup steps above (`npm install`, `npm run build`).
+2. Start Claude Code from the repo root: `claude`. The path in `.mcp.json` is relative to that folder.
+3. Approve the `hello` server when prompted.
+4. Run `/mcp` to confirm it is connected, then ask Claude to ping the server.
+
 ## Project structure
 
 ```
 hello-mcp/
+  .mcp.json         Registers the server with Claude Code (shared with the team)
   src/index.ts      Server code (source)
   build/index.js    Compiled output (generated, not committed)
   package.json      Dependencies and scripts ("type": "module")
