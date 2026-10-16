@@ -1,12 +1,16 @@
 {
   "name": "wallet-mcp",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Testnet Sui wallet: balance queries, faucet funding, transfers, and an MCP server.",
+  "main": "build/index.js",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "balance": "tsx src/scripts/balance.ts"
+    "start": "tsx src/index.ts",
+    "setup": "tsx src/scripts/setup.ts",
+    "balance": "tsx src/scripts/balance.ts",
+    "transfer": "tsx src/scripts/transfer.ts",
+    "demo": "tsx src/scripts/demo.ts"
   },
   "keywords": [],
   "author": "",

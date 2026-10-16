@@ -1,16 +1,15 @@
-// Usage: npm run balance -- [address] [--network testnet|mainnet|devnet|localnet]
-// Address falls back to $SUI_ADDRESS, then to the Sui CLI's active address.
-
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
-import { createSuiClient, isSuiNetwork, type SuiNetwork } from "../sui/client.js";
-import { getAllBalances } from "../sui/balances.js";
+import { formatBalanceReport, getAllBalances } from "../blockchain/balance.js";
+import { createSuiClient, isSuiNetwork, type SuiNetwork } from "../blockchain/client.js";
+import { loadWallet } from "../blockchain/wallet.js";
+import { resolveNetwork } from "../config.js";
 
 function parseArgs(argv: string[]): { address?: string; network: SuiNetwork } {
   let address: string | undefined;
-  let network: SuiNetwork = "testnet";
+  let network = resolveNetwork();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--network") {
@@ -35,27 +34,17 @@ async function readCliActiveAddress(): Promise<string | undefined> {
 
 async function main() {
   const { address: argAddress, network } = parseArgs(process.argv.slice(2));
-  const address = argAddress ?? process.env.SUI_ADDRESS ?? (await readCliActiveAddress());
+  const localWallet = network === "testnet" ? await loadWallet(network) : undefined;
+  const address = argAddress ?? process.env.SUI_ADDRESS ?? localWallet?.address ?? (await readCliActiveAddress());
   if (!address) {
-    throw new Error("No address given. Pass one as an argument or set SUI_ADDRESS.");
+    throw new Error("No address given. Pass one, set SUI_ADDRESS, or run npm run setup.");
   }
   if (!isValidSuiAddress(normalizeSuiAddress(address))) {
     throw new Error(`Not a valid Sui address: ${address}`);
   }
   const owner = normalizeSuiAddress(address);
-
-  const client = createSuiClient(network);
-  const balances = await getAllBalances(client, owner);
-
-  console.log(`Address: ${owner}`);
-  console.log(`Network: ${network}`);
-  if (balances.length === 0) {
-    console.log("No coins found.");
-    return;
-  }
-  for (const b of balances) {
-    console.log(`  ${b.formatted.padStart(20)} ${b.symbol}  (${b.coinType})`);
-  }
+  const balances = await getAllBalances(createSuiClient(network), owner);
+  console.log(formatBalanceReport(network, owner, balances));
 }
 
 main().catch((error) => {

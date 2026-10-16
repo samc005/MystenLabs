@@ -2,7 +2,7 @@
 
 A minimal MCP (Model Context Protocol) server with one trivial tool, `ping`. It is the first step of the AI track: learn how MCP servers work before building the Sui wallet tools on top.
 
-Part of the capstone project: an AI-powered wallet for the Sui blockchain.
+Part of the capstone project: an AI-powered wallet for the Sui blockchain. The system design, security plan, and roadmap are in [docs/DESIGN.md](../docs/DESIGN.md). Wallet tools live in `wallet-mcp`, not in this package.
 
 ## What it does
 
@@ -88,9 +88,9 @@ _To fill in as we experiment. Ideas to test:_
 
 ## Next steps
 
-- Connect this server to a CLI client (next sub-issue)
-- Agree the interface with the blockchain track
-- Replace `ping` with real Sui tools (`get_balance`, `simulate_transfer`, ...)
+- Connect this server to a CLI client, to confirm the stdio path.
+- Connect a client to `wallet-mcp` and drive `get_balance` and `transfer_sui` with a sentence. That is phase 1 in the design doc.
+- Keep `ping` here. It is the MCP exercise. The Sui tools stay in `wallet-mcp`.
 
 ## References
 
