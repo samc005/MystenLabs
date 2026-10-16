@@ -2,7 +2,7 @@
 
 The first slice of the Sui wallet: a testnet address, faucet SUI, balance queries, and a small transfer. An MCP server exposes the same two actions (`get_balance`, `transfer_sui`) so an AI client can call them.
 
-Testnet coins are worthless. The secret key is written to `.wallet/sender.json` (mode `0600`) and is gitignored. This milestone signs inside the process. The policy engine, isolated signer, and on-chain vault come later.
+Testnet coins are worthless. The secret key is written to `.wallet/sender.json` (mode `0600`) and is gitignored. This milestone signs inside the process. The full architecture, security stages, and roadmap are in [docs/DESIGN.md](../docs/DESIGN.md).
 
 ## Layout
 
@@ -59,4 +59,4 @@ npm run build
 
 ## What this does not do yet
 
-No policy limits, no separate signer process, no simulation summary, no passkey, no Move vault. A transfer from the MCP tool is a real testnet transaction.
+No policy limits, no separate signer process, no simulation summary, no passkey, no Move vault. A transfer from the MCP tool is a real testnet transaction. Those later boundaries are specified in [docs/DESIGN.md](../docs/DESIGN.md).
