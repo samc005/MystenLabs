@@ -57,6 +57,20 @@ npm run build
 
 `transfer_sui` does not take a secret key. Run `npm run setup` before using the tools.
 
+### Team API key
+
+The team shares one Anthropic API key for Claude Code. It is never committed. Get it from the team lead over a private channel, then create `.claude/settings.local.json` in this folder:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-ant-..."
+  }
+}
+```
+
+This file is gitignored. Restart Claude Code, approve the key when prompted, and run `/status` to confirm it is in use. Never paste the key into `.mcp.json`, a README, or any other tracked file.
+
 ## What this does not do yet
 
 No policy limits, no separate signer process, no simulation summary, no passkey, no Move vault. A transfer from the MCP tool is a real testnet transaction. Those later boundaries are specified in [docs/DESIGN.md](../docs/DESIGN.md).

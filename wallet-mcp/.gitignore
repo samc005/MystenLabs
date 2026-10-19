@@ -2,3 +2,4 @@ node_modules/
 build/
 .wallet/
 .env
+.claude/settings.local.json
