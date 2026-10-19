@@ -1,0 +1,24 @@
+{
+  "name": "demo-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser demo of the Sui testnet wallet: create a wallet, fund it, check balances, send SUI.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mysten/sui": "2.35.0",
+    "next": "16.3.8",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.3",
+    "typescript": "6.0.3"
+  }
+}
