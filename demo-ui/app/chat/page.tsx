@@ -41,11 +41,11 @@ export default function ChatDemo() {
           ← All demos
         </Link>
         <p className="eyebrow">
-          <span className="pill">testnet</span> Local only · Claude → wallet-mcp → Sui
+          <span className="pill">testnet</span> Local only · Cipher (Claude) → wallet-mcp → Sui
         </p>
-        <h1>Chat with your wallet</h1>
+        <h1>Chat with Cipher</h1>
         <p className="lede">
-          Your message goes to Claude with the tools listed by the wallet-mcp server. When Claude calls one, the server
+          Cipher is an assistant powered by Claude. Your message goes to it with the tools listed by the wallet-mcp server. When Cipher calls one, the server
           runs it against the local wallets and the panel on the right updates.
         </p>
       </header>

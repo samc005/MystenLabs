@@ -9,8 +9,8 @@ export default function Home() {
         </p>
         <h1>AI wallet on Sui</h1>
         <p className="lede">
-          Two demos of the same wallet code. One runs entirely in your browser. The other lets you ask Claude to move
-          SUI, and Claude does it by calling the wallet-mcp tools.
+          Two demos of the same wallet code. One runs entirely in your browser. The other lets you ask Cipher, an assistant
+          powered by Claude, to move SUI, and Cipher does it by calling the wallet-mcp tools.
         </p>
       </header>
 
@@ -27,9 +27,9 @@ export default function Home() {
 
         <Link href="/chat" className="card demo-card">
           <span className="demo-tag local">Local only</span>
-          <h2>Chat with Claude</h2>
+          <h2>Chat with Cipher</h2>
           <p className="muted">
-            Type a request. Claude calls get_balance and transfer_sui on the real wallet-mcp server, using the wallets your
+            Type a request. Cipher calls get_balance and transfer_sui on the real wallet-mcp server, using the wallets your
             npm scripts created, and the balances update live.
           </p>
           <span className="demo-cta">Open demo →</span>

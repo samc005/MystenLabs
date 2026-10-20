@@ -9,7 +9,7 @@ const BUTTONS: { script: ScriptName; label: string; hint: string }[] = [
   { script: "demo", label: "npm run demo", hint: "Create the receiver wallet and send it 0.01 SUI." },
   { script: "balance", label: "npm run balance", hint: "Print the sender's balances." },
   { script: "install", label: "npm install", hint: "Install wallet-mcp dependencies." },
-  { script: "build", label: "npm run build", hint: "Build the MCP server Claude talks to." },
+  { script: "build", label: "npm run build", hint: "Build the MCP server Cipher talks to." },
 ];
 
 interface Props {

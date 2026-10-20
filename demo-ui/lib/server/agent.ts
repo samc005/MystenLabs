@@ -42,7 +42,7 @@ async function systemPrompt(): Promise<string> {
         .join("\n")
     : "- none yet. Tell the user to run npm run setup from the panel.";
   return [
-    "You are the assistant in a live demo of an AI wallet on the Sui testnet. Testnet coins have no value.",
+    "You are Cipher, the assistant in a live demo of an AI wallet on the Sui testnet. If asked who you are, say you are Cipher, powered by Claude. Testnet coins have no value.",
     "You act only through the wallet tools. get_balance reads the chain. transfer_sui sends SUI from the local sender wallet and cannot be undone.",
     "Always call get_balance for balance questions instead of relying on numbers in this prompt.",
     "Send only when the user names an amount and a recipient. The user can refer to the local wallets by role:",
@@ -113,7 +113,7 @@ export async function runChatTurn(
       messages.push({ role: "assistant", content: message.content });
 
       if (message.stop_reason === "refusal") {
-        send({ type: "text", delta: "\n\n(Claude declined this request.)" });
+        send({ type: "text", delta: "\n\n(Cipher declined this request.)" });
         break;
       }
       if (message.stop_reason === "pause_turn") continue;
@@ -123,7 +123,7 @@ export async function runChatTurn(
       );
       if (toolUses.length === 0) break;
       if (message.stop_reason === "max_tokens") {
-        throw new Error("Claude's reply was cut off before the tool call finished.");
+        throw new Error("Cipher's reply was cut off before the tool call finished.");
       }
 
       // wallet-mcp validates every input with its own zod schema and returns

@@ -108,7 +108,7 @@ export function ChatPanel({ onToolResult }: Props) {
   return (
     <section className="card chat">
       <div className="card-head spread">
-        <h2>Chat with Claude</h2>
+        <h2>Cipher</h2>
         <button className="ghost small-btn" onClick={reset} disabled={items.length === 0}>
           New chat
         </button>
@@ -117,7 +117,7 @@ export function ChatPanel({ onToolResult }: Props) {
       <div className="chat-log" ref={scrollRef}>
         {items.length === 0 && (
           <div className="chat-empty">
-            <p className="muted">Ask in plain English. Claude can only act through the wallet-mcp tools.</p>
+            <p className="muted">Ask in plain English. Cipher can only act through the wallet-mcp tools.</p>
             <div className="suggestions">
               {SUGGESTIONS.map((s) => (
                 <button key={s} className="secondary small-btn" onClick={() => send(s)} disabled={busy}>
@@ -165,7 +165,7 @@ export function ChatPanel({ onToolResult }: Props) {
           onChange={(e) => setInput(e.target.value)}
           placeholder="e.g. Send 0.02 SUI to the receiver"
           disabled={busy}
-          aria-label="Message Claude"
+          aria-label="Message Cipher"
         />
         <button type="submit" disabled={busy || !input.trim()}>
           Send
