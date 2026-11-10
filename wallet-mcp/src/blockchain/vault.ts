@@ -1,8 +1,15 @@
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
+import { bcs } from "@mysten/sui/bcs";
 import { Transaction } from "@mysten/sui/transactions";
-import { normalizeSuiAddress, SUI_DECIMALS, SUI_SYSTEM_STATE_OBJECT_ID, toHex } from "@mysten/sui/utils";
-import { assertTestnet, explorerTxUrl, vaultConfig, type VaultConfig } from "../config.js";
+import {
+  normalizeStructTag,
+  normalizeSuiAddress,
+  SUI_DECIMALS,
+  SUI_SYSTEM_STATE_OBJECT_ID,
+  toHex,
+} from "@mysten/sui/utils";
+import { assertTestnet, explorerTxUrl, knownCoin, vaultConfig, type VaultConfig } from "../config.js";
 import { formatUnits } from "./balance.js";
 import type { SuiNetwork } from "./client.js";
 import { netGasMist } from "./transfer.js";
@@ -19,6 +26,12 @@ export interface StakePosition {
   activationEpoch: string;
 }
 
+/** A non-SUI coin balance held by the vault. Only the owner can withdraw it. */
+export interface HeldCoin {
+  coinType: string;
+  raw: bigint;
+}
+
 /** Current on-chain state of the spending vault. */
 export interface VaultStatus {
   vaultId: string;
@@ -30,6 +43,10 @@ export interface VaultStatus {
   allowedValidators: string[];
   /** Open staking positions held by the vault. */
   stakes: StakePosition[];
+  /** Coin types (other than SUI) the owner allows the vault to hold. */
+  allowedCoins: string[];
+  /** Non-SUI coin balances in the vault. */
+  coins: HeldCoin[];
 }
 
 /** Move serializes u64 as a string and Balance<T> as either a string or { value }. */
@@ -53,7 +70,7 @@ export async function getVaultStatus(
   });
   const fields = object.json;
   if (!fields) throw new Error(`Vault ${config.vaultId} has no readable content.`);
-  const { allowedValidators, stakes } = await readVaultDynamicFields(client, config.vaultId);
+  const { allowedValidators, stakes, allowedCoins, coins } = await readVaultDynamicFields(client, config.vaultId);
   return {
     vaultId: config.vaultId,
     balanceMist: toBigInt(fields.balance, "balance"),
@@ -62,7 +79,17 @@ export async function getVaultStatus(
     paused: fields.paused === true,
     allowedValidators,
     stakes,
+    allowedCoins,
+    coins,
   };
+}
+
+/** `0x..::spending_vault::CoinKey<0x..::dbtc::DBTC>` -> `0x..::dbtc::DBTC`. */
+function coinTypeArgument(keyType: string): string {
+  const start = keyType.indexOf("<");
+  const end = keyType.lastIndexOf(">");
+  if (start === -1 || end <= start) throw new Error(`Unexpected vault coin key type: ${keyType}`);
+  return normalizeStructTag(keyType.slice(start + 1, end));
 }
 
 /**
@@ -72,12 +99,15 @@ export async function getVaultStatus(
 async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   const allowedValidators: string[] = [];
   const stakedSuiIds: string[] = [];
+  const allowedCoins: string[] = [];
+  const coins: HeldCoin[] = [];
 
   let cursor: string | null = null;
   do {
-    const page: Awaited<ReturnType<SuiGrpcClient["listDynamicFields"]>> = await client.listDynamicFields({
+    const page: Awaited<ReturnType<typeof client.listDynamicFields<{ value: true }>>> = await client.listDynamicFields({
       parentId: vaultId,
       cursor,
+      include: { value: true },
     });
     for (const entry of page.dynamicFields) {
       if (entry.name.type.includes("::spending_vault::AllowedValidator")) {
@@ -85,6 +115,11 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
         allowedValidators.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
       } else if (entry.$kind === "DynamicObject" && entry.name.type.includes("::spending_vault::StakeKey")) {
         stakedSuiIds.push(entry.childId);
+      } else if (entry.name.type.includes("::spending_vault::AllowedCoin<")) {
+        allowedCoins.push(coinTypeArgument(entry.name.type));
+      } else if (entry.name.type.includes("::spending_vault::CoinKey<")) {
+        // Balance<T> { value: u64 } serializes to a single u64.
+        coins.push({ coinType: coinTypeArgument(entry.name.type), raw: BigInt(bcs.u64().parse(entry.value.bcs)) });
       }
     }
     cursor = page.hasNextPage ? page.cursor : null;
@@ -102,7 +137,18 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
       });
     }
   }
-  return { allowedValidators, stakes };
+  return { allowedValidators, stakes, allowedCoins, coins };
+}
+
+/** Unknown coin types show the raw amount and full type rather than a guessed symbol. */
+function formatCoinAmount(coinType: string, raw: bigint): string {
+  const known = knownCoin(coinType);
+  return known ? `${formatUnits(raw, known.decimals)} ${known.symbol}` : `${raw} (raw units of ${coinType})`;
+}
+
+function coinLabel(coinType: string): string {
+  const known = knownCoin(coinType);
+  return known ? `${known.symbol} (${coinType})` : coinType;
 }
 
 export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vaultConfig()): string {
@@ -118,6 +164,10 @@ export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vau
     status.stakes.length
       ? `Staked: ${status.stakes.map((s) => `${sui(s.principalMist)} (receipt ${s.stakedSuiId}, active from epoch ${s.activationEpoch})`).join("; ")}`
       : "Staked: nothing",
+    `Other coins allowed: ${status.allowedCoins.length ? status.allowedCoins.map(coinLabel).join(", ") : "none (only SUI until the owner allows a coin)"}`,
+    status.coins.length
+      ? `Other coins held (owner-only withdrawal): ${status.coins.map((c) => formatCoinAmount(c.coinType, c.raw)).join("; ")}`
+      : "Other coins held: none",
   ].join("\n");
 }
 

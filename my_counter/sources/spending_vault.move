@@ -8,10 +8,13 @@
 ///   - the owner can always withdraw the remaining funds
 ///   - the agent can stake vault funds, but only with validators the owner allowed,
 ///     and the staking receipt stays inside the vault so only the owner can unstake
+///   - the vault can hold other coin types (such as BTC on Sui) the owner allowed;
+///     only the owner can take them out
 ///
 /// Permissions are capability objects: whoever holds the object has the power.
 module my_counter::spending_vault;
 
+use std::type_name;
 use sui::balance::Balance;
 use sui::coin::{Self, Coin};
 use sui::dynamic_field as df;
@@ -29,6 +32,8 @@ const EInsufficientFunds: u64 = 3;
 const ERevoked: u64 = 4;
 const EValidatorNotAllowed: u64 = 5;
 const EStakeNotFound: u64 = 6;
+const ECoinNotAllowed: u64 = 7;
+const ESuiUsesMainBalance: u64 = 8;
 
 // === Objects ===
 
@@ -66,6 +71,13 @@ public struct AllowedValidator has copy, drop, store {
 public struct StakeKey has copy, drop, store {
     staked_sui_id: ID,
 }
+
+/// Dynamic-field key: marks a coin type (other than SUI) the vault may hold. Keyed by the
+/// exact type, so a lookalike coin with the same name or symbol does not match.
+public struct AllowedCoin<phantom T> has copy, drop, store {}
+
+/// Dynamic-field key: the vault's `Balance<T>` for a coin type other than SUI.
+public struct CoinKey<phantom T> has copy, drop, store {}
 
 // === Events (so apps and explorers can see activity) ===
 
@@ -174,6 +186,45 @@ public fun disallow_validator(cap: &OwnerCap, vault: &mut Vault, validator: addr
     };
 }
 
+/// Let the vault hold coin type `T`. Nothing of type `T` can be deposited until the owner
+/// allows it here. SUI is not allowed: it lives in the vault's main balance.
+public fun allow_coin<T>(cap: &OwnerCap, vault: &mut Vault) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    assert!(
+        type_name::with_original_ids<T>() != type_name::with_original_ids<SUI>(),
+        ESuiUsesMainBalance,
+    );
+    let key = AllowedCoin<T> {};
+    if (!df::exists(&vault.id, key)) {
+        df::add(&mut vault.id, key, true);
+    };
+}
+
+/// Stop new deposits of `T`. Coins already held stay in the vault, and the owner can still
+/// withdraw them.
+public fun disallow_coin<T>(cap: &OwnerCap, vault: &mut Vault) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    let key = AllowedCoin<T> {};
+    if (df::exists(&vault.id, key)) {
+        let _: bool = df::remove(&mut vault.id, key);
+    };
+}
+
+/// Take coins of type `T` out of the vault to the owner. Works after `disallow_coin` too,
+/// so the owner can always recover what the vault holds.
+public fun withdraw_coin<T>(
+    cap: &OwnerCap,
+    vault: &mut Vault,
+    amount: u64,
+    ctx: &mut TxContext,
+) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    assert!(coin_balance<T>(vault) >= amount, EInsufficientFunds);
+    let held: &mut Balance<T> = df::borrow_mut(&mut vault.id, CoinKey<T> {});
+    let coin = coin::take(held, amount, ctx);
+    transfer::public_transfer(coin, ctx.sender());
+}
+
 /// Unstake a position the agent opened. Principal and rewards go back into the
 /// vault's balance, not to the owner's wallet (use `withdraw` for that). The agent
 /// cannot call this: it needs the `OwnerCap`.
@@ -201,6 +252,17 @@ public fun unstake(
 /// Anyone can top up the vault.
 public fun deposit(vault: &mut Vault, payment: Coin<SUI>) {
     vault.balance.join(coin::into_balance(payment));
+}
+
+/// Anyone can top up the vault with a coin type the owner allowed.
+public fun deposit_coin<T>(vault: &mut Vault, payment: Coin<T>) {
+    assert!(is_coin_allowed<T>(vault), ECoinNotAllowed);
+    let key = CoinKey<T> {};
+    if (!df::exists(&vault.id, key)) {
+        df::add(&mut vault.id, key, sui::balance::zero<T>());
+    };
+    let held: &mut Balance<T> = df::borrow_mut(&mut vault.id, key);
+    held.join(coin::into_balance(payment));
 }
 
 // === Agent action ===
@@ -285,6 +347,18 @@ public fun per_tx_limit(vault: &Vault): u64 { vault.per_tx_limit }
 public fun total_spent(vault: &Vault): u64 { vault.total_spent }
 
 public fun is_paused(vault: &Vault): bool { vault.paused }
+
+public fun is_coin_allowed<T>(vault: &Vault): bool {
+    df::exists(&vault.id, AllowedCoin<T> {})
+}
+
+/// How much of coin type `T` the vault holds. SUI is reported by `balance`, not here.
+public fun coin_balance<T>(vault: &Vault): u64 {
+    let key = CoinKey<T> {};
+    if (!df::exists(&vault.id, key)) return 0;
+    let held: &Balance<T> = df::borrow(&vault.id, key);
+    held.value()
+}
 
 // === Tests ===
 
@@ -546,6 +620,161 @@ fun test_allow_validator_with_other_vaults_cap_fails() {
         allow_validator(&cap_a, &mut vault_b, VALIDATOR);
     } else {
         allow_validator(&cap_b, &mut vault_b, VALIDATOR);
+    };
+    abort 999
+}
+
+// --- Holding other coin types ---
+
+/// Stand-in for a BTC-on-Sui coin such as testnet DBTC.
+#[test_only]
+public struct DBTC has drop {}
+
+#[test_only]
+fun owner_allows_dbtc(s: &mut ts::Scenario) {
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    allow_coin<DBTC>(&owner_cap, &mut vault);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+}
+
+/// RECIPIENT stands in for "anyone": depositing needs no capability.
+#[test_only]
+fun deposit_dbtc(s: &mut ts::Scenario, amount: u64) {
+    s.next_tx(RECIPIENT);
+    let mut vault = s.take_shared<Vault>();
+    deposit_coin(&mut vault, coin::mint_for_testing<DBTC>(amount, s.ctx()));
+    ts::return_shared(vault);
+}
+
+#[test]
+fun test_vault_holds_allowed_coin_and_owner_withdraws() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_allows_dbtc(&mut s);
+    deposit_dbtc(&mut s, 500);
+    deposit_dbtc(&mut s, 250);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    assert!(vault.is_coin_allowed<DBTC>());
+    assert!(vault.coin_balance<DBTC>() == 750);
+    // Other coins are kept apart from the SUI the agent can spend.
+    assert!(vault.balance() == 1_000);
+    withdraw_coin<DBTC>(&owner_cap, &mut vault, 300, s.ctx());
+    assert!(vault.coin_balance<DBTC>() == 450);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+
+    s.next_tx(OWNER);
+    let received = s.take_from_sender<Coin<DBTC>>();
+    assert!(received.value() == 300);
+    s.return_to_sender(received);
+    s.end();
+}
+
+#[test]
+fun test_coin_balance_is_zero_before_any_deposit() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let vault = s.take_shared<Vault>();
+    assert!(!vault.is_coin_allowed<DBTC>());
+    assert!(vault.coin_balance<DBTC>() == 0);
+    ts::return_shared(vault);
+    s.end();
+}
+
+#[test, expected_failure(abort_code = ECoinNotAllowed)]
+fun test_deposit_unallowed_coin_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    deposit_dbtc(&mut s, 500);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = ECoinNotAllowed)]
+fun test_deposit_after_disallow_coin_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_allows_dbtc(&mut s);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    disallow_coin<DBTC>(&owner_cap, &mut vault);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+
+    deposit_dbtc(&mut s, 500);
+    abort 999
+}
+
+#[test]
+fun test_owner_withdraws_coin_after_disallow() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_allows_dbtc(&mut s);
+    deposit_dbtc(&mut s, 500);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    disallow_coin<DBTC>(&owner_cap, &mut vault);
+    withdraw_coin<DBTC>(&owner_cap, &mut vault, 500, s.ctx());
+    assert!(vault.coin_balance<DBTC>() == 0);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+    s.end();
+}
+
+#[test, expected_failure(abort_code = EInsufficientFunds)]
+fun test_withdraw_more_coin_than_held_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_allows_dbtc(&mut s);
+    deposit_dbtc(&mut s, 500);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    withdraw_coin<DBTC>(&owner_cap, &mut vault, 501, s.ctx());
+    abort 999
+}
+
+#[test, expected_failure(abort_code = ESuiUsesMainBalance)]
+fun test_allow_sui_as_other_coin_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    allow_coin<SUI>(&owner_cap, &mut vault);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EWrongVault)]
+fun test_withdraw_coin_with_other_vaults_cap_fails() {
+    let mut s = ts::begin(OWNER);
+    create(100, s.ctx());
+    create(100, s.ctx());
+    s.next_tx(OWNER);
+
+    let mut vault_a = s.take_shared<Vault>();
+    let mut vault_b = s.take_shared<Vault>();
+    let cap_a = s.take_from_sender<OwnerCap>();
+    let cap_b = s.take_from_sender<OwnerCap>();
+
+    // Pair each cap with the vault it does NOT belong to.
+    if (cap_a.vault_id == object::id(&vault_a)) {
+        withdraw_coin<DBTC>(&cap_a, &mut vault_b, 0, s.ctx());
+    } else {
+        withdraw_coin<DBTC>(&cap_b, &mut vault_b, 0, s.ctx());
     };
     abort 999
 }

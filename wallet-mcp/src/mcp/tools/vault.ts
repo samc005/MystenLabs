@@ -27,7 +27,7 @@ export function registerVault(server: McpServer): void {
     "vault_status",
     {
       description:
-        "Read the spending vault: how much SUI it holds, the per-spend limit, total spent so far, whether the owner has paused it, which validators the agent may stake with, and open staking positions. Call this before vault_spend or vault_stake.",
+        "Read the spending vault: how much SUI it holds, the per-spend limit, total spent so far, whether the owner has paused it, which validators the agent may stake with, open staking positions, and other coins the vault may hold or holds (such as BTC on Sui; only the owner can withdraw those). Call this before vault_spend or vault_stake.",
       inputSchema: z.object({}),
     },
     async () => {

@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { normalizeStructTag } from "@mysten/sui/utils";
 import { isSuiNetwork, type SuiNetwork } from "./blockchain/client.js";
 
 /** Directory that contains package.json, whether this file is run from src/ or build/. */
@@ -67,6 +68,36 @@ export function vaultConfig(): VaultConfig {
     vaultId: process.env.SUI_VAULT_ID ?? DEFAULT_VAULT.vaultId,
     agentCapId: process.env.SUI_VAULT_AGENT_CAP_ID ?? DEFAULT_VAULT.agentCapId,
   };
+}
+
+export interface KnownCoin {
+  symbol: string;
+  /** Full Move type. The only thing a coin is matched on. */
+  type: string;
+  decimals: number;
+}
+
+/**
+ * Coin types the wallet knows how to name and format: DeepBook's testnet coins. Matched by
+ * exact type, never by on-chain name or symbol, which any coin can copy. The vault's own
+ * allowlist (`allow_coin`) decides what it may hold; this list only affects display.
+ */
+const KNOWN_COINS: KnownCoin[] = [
+  {
+    symbol: "DBTC",
+    type: "0x6502dae813dbe5e42643c119a6450a518481f03063febc7e20238e43b6ea9e86::dbtc::DBTC",
+    decimals: 8,
+  },
+  {
+    symbol: "DBUSDC",
+    type: "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC",
+    decimals: 6,
+  },
+];
+
+export function knownCoin(type: string): KnownCoin | undefined {
+  const normalized = normalizeStructTag(type);
+  return KNOWN_COINS.find((coin) => normalizeStructTag(coin.type) === normalized);
 }
 
 export function explorerTxUrl(network: SuiNetwork, digest: string): string {

@@ -116,7 +116,7 @@ The contract enforces the per-spend limit, pause, and revocation.
 
 | Tool | Inputs | Behavior |
 |---|---|---|
-| `vault_status` | none | Reads vault balance, per-spend limit, total spent, and paused flag. |
+| `vault_status` | none | Reads vault balance, per-spend limit, total spent, paused flag, staking allowlist and positions, and other coins the vault may hold or holds. |
 | `vault_spend` | `to`, `amount`, `dryRun` optional | Pays from the vault under its on-chain rules. |
 
 ### Testnet write tools
