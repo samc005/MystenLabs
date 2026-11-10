@@ -109,6 +109,16 @@ unbounded network requests.
 | `resolve_mvr` | `packages` or `types` | Resolves Move Registry package and type names. Read-only. |
 | `wait_for_transaction` | `digest`, `timeoutMs` optional | Waits for a transaction to checkpoint and reports its final result. It does not submit a transaction. |
 
+### Spending vault tools
+
+The agent should hold only enough SUI for gas and spend through `vault_spend`.
+The contract enforces the per-spend limit, pause, and revocation.
+
+| Tool | Inputs | Behavior |
+|---|---|---|
+| `vault_status` | none | Reads vault balance, per-spend limit, total spent, and paused flag. |
+| `vault_spend` | `to`, `amount`, `dryRun` optional | Pays from the vault under its on-chain rules. |
+
 ### Testnet write tools
 
 These tools mutate testnet state. They use the local sender key and cannot be
@@ -117,7 +127,7 @@ confirmation in a separate message before calling a write tool.
 
 | Tool | Inputs | Behavior |
 |---|---|---|
-| `transfer_sui` | `to`, `amount` | Sends SUI from the local sender wallet. Gas is paid automatically and the tool waits for confirmation. |
+| `transfer_sui` | `to`, `amount` | Sends SUI from the local sender wallet. Disabled by default because it bypasses the vault; set `SUI_ENABLE_DIRECT_TRANSFER=true` to register it. Gas is paid automatically and the tool waits for confirmation. |
 | `request_faucet` | none | Requests testnet SUI for the local sender wallet and waits for faucet confirmation. Faucet limits apply. |
 | `split_coin` | `coinId`, `amount`, `recipient` optional | Splits a local SUI coin. The new coin stays with the sender unless `recipient` is supplied. |
 | `merge_coins` | `primaryCoinId`, `coinIds` | Merges local SUI coin objects into the primary coin. |
@@ -160,7 +170,10 @@ implementation signs in the MCP process with a local Ed25519 key. Signing is
 restricted to testnet, and the UI confirmation prompt is conversational rather
 than a hardware-backed approval boundary.
 
-Not implemented yet: a separate signer process, policy limits, passkeys,
+The spending vault provides on-chain limits, pause, and revocation for
+`vault_spend`. Local wallet write tools operate outside those vault rules.
+
+Not implemented yet: a separate signer process, wallet-wide policy limits, passkeys,
 hardware-wallet approval, production secret storage, arbitrary Move call
 authorization, token transfer policies, staking policies, and a production
 transaction approval workflow.

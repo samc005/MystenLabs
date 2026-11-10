@@ -8,7 +8,7 @@ import type { SuiNetwork } from "./client.js";
 import type { TransferReceipt } from "./types.js";
 import { requireAddress } from "./wallet.js";
 
-function netGasMist(gas: {
+export function netGasMist(gas: {
   computationCost: string;
   storageCost: string;
   storageRebate: string;
@@ -16,17 +16,16 @@ function netGasMist(gas: {
   return BigInt(gas.computationCost) + BigInt(gas.storageCost) - BigInt(gas.storageRebate);
 }
 
-/**
- * Sends SUI from `signer` to `recipient`, drawing from the address balance
- * (and falling back to coin objects) via coinWithBalance.
- */
-export async function transferSui(input: {
+type TransferInput = {
   client: SuiGrpcClient;
   network: SuiNetwork;
   signer: Ed25519Keypair;
   recipient: string;
   amountMist: bigint;
-}): Promise<TransferReceipt> {
+};
+
+/** Validates the request and builds the (unsigned) transfer transaction. */
+async function prepareTransfer(input: TransferInput) {
   assertTestnet(input.network);
   if (input.amountMist <= 0n) {
     throw new Error("Amount must be greater than 0.");
@@ -48,6 +47,85 @@ export async function transferSui(input: {
   const tx = new Transaction();
   tx.setSender(sender);
   tx.transferObjects([coinWithBalance({ balance: input.amountMist })(tx)], recipient);
+  return { tx, sender, recipient, balance };
+}
+
+export type DryRunResult = {
+  sender: string;
+  recipient: string;
+  amountMist: bigint;
+  balanceMist: bigint;
+  success: boolean;
+  error: string | null;
+  gasMist: bigint | null;
+  gasBreakdown: { computationCost: string; storageCost: string; storageRebate: string } | null;
+  balanceChanges: TransferReceipt["balanceChanges"];
+};
+
+/** Simulates the transfer on the node. Nothing is signed or submitted. */
+export async function dryRunTransferSui(input: TransferInput): Promise<DryRunResult> {
+  const { tx, sender, recipient, balance } = await prepareTransfer(input);
+  const result = await input.client.simulateTransaction({
+    transaction: tx,
+    include: { effects: true, balanceChanges: true },
+  });
+  const outcome = result.$kind === "FailedTransaction" ? result.FailedTransaction : result.Transaction;
+  const gas = outcome.effects?.gasUsed ?? null;
+  return {
+    sender,
+    recipient,
+    amountMist: input.amountMist,
+    balanceMist: balance.raw,
+    success: result.$kind === "Transaction",
+    error: result.$kind === "FailedTransaction" ? (outcome.status.error?.message ?? "Simulation failed.") : null,
+    gasMist: gas ? netGasMist(gas) : null,
+    gasBreakdown: gas
+      ? {
+          computationCost: gas.computationCost,
+          storageCost: gas.storageCost,
+          storageRebate: gas.storageRebate,
+        }
+      : null,
+    balanceChanges: (outcome.balanceChanges ?? []).map((change) => ({
+      address: change.address,
+      coinType: change.coinType,
+      amount: change.amount,
+    })),
+  };
+}
+
+export function formatDryRun(result: DryRunResult): string {
+  const sui = (mist: bigint | string) => formatUnits(BigInt(mist), SUI_DECIMALS);
+  const lines = [
+    `DRY RUN (nothing was signed or submitted)`,
+    `Status: ${result.success ? "would succeed" : `would FAIL: ${result.error}`}`,
+    `From: ${result.sender}  (balance ${sui(result.balanceMist)} SUI)`,
+    `To: ${result.recipient}`,
+    `Amount: ${sui(result.amountMist)} SUI`,
+  ];
+  if (result.gasBreakdown && result.gasMist !== null) {
+    lines.push(
+      `Estimated gas: ${sui(result.gasMist)} SUI`,
+      `  computation: ${sui(result.gasBreakdown.computationCost)}`,
+      `  storage:     ${sui(result.gasBreakdown.storageCost)}`,
+      `  rebate:      -${sui(result.gasBreakdown.storageRebate)}`,
+    );
+  }
+  if (result.balanceChanges.length > 0) {
+    lines.push("Predicted balance changes:");
+    for (const change of result.balanceChanges) {
+      lines.push(`  ${sui(change.amount)} SUI  ${change.address}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Sends SUI from `signer` to `recipient`, drawing from the address balance
+ * (and falling back to coin objects) via coinWithBalance.
+ */
+export async function transferSui(input: TransferInput): Promise<TransferReceipt> {
+  const { tx, sender, recipient } = await prepareTransfer(input);
 
   const submitted = await input.client.signAndExecuteTransaction({
     transaction: tx,

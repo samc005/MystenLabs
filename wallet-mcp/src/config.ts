@@ -39,6 +39,36 @@ export function walletPath(role: WalletRole = "sender"): string {
   return join(PACKAGE_ROOT, ".wallet", `${role}.json`);
 }
 
+export interface VaultConfig {
+  /** Package that contains the spending_vault module. */
+  packageId: string;
+  /** Shared Vault object that holds the money and the rules. */
+  vaultId: string;
+  /** AgentCap owned by the local sender wallet. Lets it call spend, nothing else. */
+  agentCapId: string;
+}
+
+/**
+ * Testnet deployment of my_counter::spending_vault. These are public on-chain IDs,
+ * not secrets. Override with SUI_VAULT_PACKAGE_ID, SUI_VAULT_ID, SUI_VAULT_AGENT_CAP_ID.
+ *
+ * packageId is the latest upgrade (v2, adds staking). Move calls must target the version
+ * that has the function; the vault and caps keep their original IDs across upgrades.
+ */
+const DEFAULT_VAULT: VaultConfig = {
+  packageId: "0x495ab03ab692995629a16b09e63fe8c35ae8242378aab7a9dbab8d93522e6191",
+  vaultId: "0xed4a0431aed6b0ff544dbfa7796fc57df573754978be85d0d4651a2f60100832",
+  agentCapId: "0xcacfc4e834d9ea96aacb799843c88ebd0da5be3859744f9ac262b0828e21828d",
+};
+
+export function vaultConfig(): VaultConfig {
+  return {
+    packageId: process.env.SUI_VAULT_PACKAGE_ID ?? DEFAULT_VAULT.packageId,
+    vaultId: process.env.SUI_VAULT_ID ?? DEFAULT_VAULT.vaultId,
+    agentCapId: process.env.SUI_VAULT_AGENT_CAP_ID ?? DEFAULT_VAULT.agentCapId,
+  };
+}
+
 export function explorerTxUrl(network: SuiNetwork, digest: string): string {
   return `https://suiscan.xyz/${network}/tx/${digest}`;
 }
