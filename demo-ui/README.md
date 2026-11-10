@@ -1,5 +1,10 @@
 # demo-ui
 
+The browser wallet includes a local WebAuthn passkey approval demo. Passkey
+credentials are verified server-side and stored in `demo-ui/.passkey/`, which
+is ignored by git. The server is localhost-only; this is a testnet security
+prototype, not production custody.
+
 Two demos of the Sui testnet wallet. Testnet coins have no value.
 
 | Demo | Route | Runs where | What it shows |

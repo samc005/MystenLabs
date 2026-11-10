@@ -2,7 +2,9 @@
 
 Design for a testnet wallet that takes a plain-English sentence and turns it into a Sui transaction, with the model kept outside the security boundary.
 
-Status on 13 Oct 2026: the SUI testnet path works. A model has not driven it. Policy, a separate signer, simulation summaries, the Move vault, and passkeys are specified below and are not built.
+Status on 10 Nov 2026: the SUI testnet path works and the browser demo has a
+local WebAuthn passkey approval prototype. Policy, a separate signer, and
+on-chain passkey-controlled vault administration are still not built.
 
 ## 1. Purpose
 
