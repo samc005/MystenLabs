@@ -8,6 +8,8 @@ import { registerGetTransaction } from "./getTransaction.js";
 import { registerListOwnedObjects } from "./listOwnedObjects.js";
 import { registerListTransactions } from "./listTransactions.js";
 import { registerTransfer } from "./transfer.js";
+import { registerExtendedReadOnlyTools } from "./extendedReadOnly.js";
+import { registerWriteTools } from "./writeTools.js";
 
 export function registerTools(server: McpServer): void {
   registerGetAddress(server);
@@ -18,5 +20,7 @@ export function registerTools(server: McpServer): void {
   registerListOwnedObjects(server);
   registerGetNft(server);
   registerEstimateGas(server);
+  registerExtendedReadOnlyTools(server);
+  registerWriteTools(server);
   registerTransfer(server);
 }

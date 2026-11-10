@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Sui Wallet</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+      body { background: #10131a; color: #f5f7fb; margin: 0; }
+      main { max-width: 760px; margin: 48px auto; padding: 0 20px; }
+      h1 { margin-bottom: 8px; }
+      .muted { color: #a6adbb; }
+      #chat { min-height: 280px; border: 1px solid #303744; border-radius: 12px; padding: 16px; margin: 24px 0; }
+      .msg { white-space: pre-wrap; margin: 12px 0; line-height: 1.5; }
+      .user { color: #8cc8ff; }
+      .assistant { color: #d6f5c9; }
+      form { display: flex; gap: 8px; }
+      input { flex: 1; background: #191e27; color: inherit; border: 1px solid #3c4554; border-radius: 8px; padding: 12px; }
+      button { background: #55b982; color: #07130c; border: 0; border-radius: 8px; padding: 0 18px; font-weight: 700; }
+      button:disabled { opacity: .6; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AI Sui Wallet</h1>
+      <div class="muted">Local testnet wallet assistant. Your Claude API key stays on the server.</div>
+      <section id="chat"><div class="muted">Try “What is my wallet address?”</div></section>
+      <form id="form">
+        <input id="message" autocomplete="off" placeholder="Ask about your wallet..." />
+        <button id="send" type="submit">Send</button>
+      </form>
+    </main>
+    <script>
+      const form = document.querySelector("#form");
+      const input = document.querySelector("#message");
+      const chat = document.querySelector("#chat");
+      const button = document.querySelector("#send");
+      function add(text, className) {
+        const item = document.createElement("div");
+        item.className = `msg ${className}`;
+        item.textContent = text;
+        chat.appendChild(item);
+        chat.scrollTop = chat.scrollHeight;
+      }
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = input.value.trim();
+        if (!message) return;
+        input.value = "";
+        add(message, "user");
+        button.disabled = true;
+        try {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ message }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Request failed");
+          add(result.reply, "assistant");
+        } catch (error) {
+          add(error.message, "assistant");
+        } finally {
+          button.disabled = false;
+          input.focus();
+        }
+      });
+    </script>
+  </body>
+</html>

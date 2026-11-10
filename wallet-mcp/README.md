@@ -1,94 +1,168 @@
 # wallet-mcp
 
-The first slice of the Sui wallet: a testnet address, faucet SUI, balance queries, a small transfer, and read-only chain inspection. An MCP server exposes these actions so an AI client can call them.
+Local MCP tools for a Sui testnet wallet. The server exposes wallet inspection,
+chain discovery, simulation, and explicitly mutating testnet actions to an MCP
+client such as the `demo-ui` Cipher chat.
 
-Testnet coins are worthless. The secret key is written to `.wallet/sender.json` (mode `0600`) and is gitignored. This milestone signs inside the process. The full architecture, security stages, and roadmap are in [docs/DESIGN.md](../docs/DESIGN.md).
+Testnet coins have no value. Signing happens locally with the key in
+`.wallet/sender.json`; the file is gitignored and written with mode `0600`.
+Never pass a secret key as a tool argument or commit one to the repository.
 
-## Layout
+## Requirements
 
-```
-src/index.ts                 MCP entry (stdio)
-src/config.ts                Network, wallet path, explorer links
-src/mcp/server.ts            Registers tools
-src/mcp/tools/getAddress.ts  Read the local wallet address
-src/mcp/tools/getBalance.ts  Read balances
-src/mcp/tools/getTransaction.ts  Read transaction details
-src/mcp/tools/listTransactions.ts  List recent transactions
-src/mcp/tools/getCoinMetadata.ts  Read coin metadata
-src/mcp/tools/listOwnedObjects.ts  List owned objects
-src/mcp/tools/getNft.ts       Read object/NFT metadata
-src/mcp/tools/estimateGas.ts  Simulate serialized transactions
-src/mcp/tools/transfer.ts    Send testnet SUI
-src/blockchain/client.ts     Sui gRPC client
-src/blockchain/balance.ts    Address balances
-src/blockchain/faucet.ts     Testnet faucet
-src/blockchain/transfer.ts   coinWithBalance transfer
-src/blockchain/wallet.ts     Local key file
-```
+- Node.js 22 or newer
+- npm
+- A Sui testnet wallet created by `npm run setup` for signing tools
 
 ## Setup
 
-Requires Node.js 22 or newer (Node 24.7+ uses native Argon2 for the faucet).
-
-```bash
+```powershell
 cd wallet-mcp
 npm install
 npm run setup
-```
-
-`npm run setup` creates the sender wallet if needed, requests testnet SUI when the balance is 0, and prints the address. The faucet runs a proof-of-work and can take a minute. If it rate-limits you, wait and retry, or use https://faucet.sui.io with the printed address.
-
-## Commands
-
-```bash
-npm run balance                         # local wallet
-npm run balance -- 0xYourAddress        # any address
-npm run transfer -- 0xRecipient 0.01    # send 0.01 SUI
-npm run demo                            # fund sender, send 0.01 SUI to a second local address
-```
-
-Confirm the transfer on the explorer link the command prints (Suiscan, testnet).
-
-## MCP
-
-```bash
 npm run build
 ```
 
-`.mcp.json` registers the server as `wallet`. Start the client from this folder so `build/index.js` resolves. The server logs to stderr only; stdout is the protocol.
+`npm run setup` creates the sender wallet if needed and requests testnet SUI
+when its balance is zero. Faucet proof-of-work can take a few minutes. If the
+faucet rate-limits the request, wait and retry or use
+https://faucet.sui.io.
 
-| Tool | Input | What it does |
-|---|---|---|
-| `get_address` | none | Returns the local wallet address. |
-| `get_balance` | `address` optional | Reads balances from the chain. Omit `address` to use the local wallet. |
-| `get_transaction` | `digest` | Reads transaction status, effects, events, and balance changes. |
-| `list_transactions` | `address`, `limit` optional | Lists recent transactions sent by an address. |
-| `get_coin_metadata` | `coinType` | Reads token name, symbol, decimals, and icon metadata. |
-| `list_owned_objects` | `address`, `type`, `limit` optional | Lists objects owned by an address. |
-| `get_nft` | `objectId` | Reads an object’s type and display metadata. |
-| `estimate_gas` | `transactionBase64` | Simulates serialized transaction bytes without signing or submitting. |
-| `transfer_sui` | `to`, `amount` | Sends testnet SUI. `amount` is a decimal string such as `"0.01"`. |
+## Commands
 
-`transfer_sui` does not take a secret key. Run `npm run setup` before using the tools.
+```powershell
+npm run balance
+npm run balance -- 0xYourAddress
+npm run transfer -- 0xRecipient 0.01
+npm run demo
+npm run build
+npm run typecheck
+```
 
-### Team API key
+`npm run demo` creates a receiver wallet when needed, funds the sender, and
+sends `0.01` testnet SUI to the receiver.
 
-The team shares one Anthropic API key for Claude Code. It is never committed. Get it from the team lead over a private channel, then create `.claude/settings.local.json` in this folder:
+## MCP server
+
+Build the server before starting an MCP client:
+
+```powershell
+npm run build
+```
+
+`.mcp.json` registers the server as `wallet`:
 
 ```json
 {
-  "env": {
-    "ANTHROPIC_API_KEY": "sk-ant-..."
+  "mcpServers": {
+    "wallet": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["build/index.js"]
+    }
   }
 }
 ```
 
-This file is gitignored. Restart Claude Code, approve the key when prompted, and run `/status` to confirm it is in use. Never paste the key into `.mcp.json`, a README, or any other tracked file.
+The server writes logs to stderr. stdout is reserved for the MCP protocol.
+The active network defaults to `testnet`; `SUI_NETWORK` may select another
+network for read-only operations. Signing is always restricted to testnet.
 
-## Authorization boundary
+## Tool reference
 
-The read-only tools above do not sign or submit transactions. `transfer_sui` remains the original local-key testnet spike. Token transfers, staking, and unstaking are intentionally not exposed until the Move contract, policy checks, and separate signer/approval layer are in place.
+All amounts are decimal strings unless stated otherwise. Addresses and object
+IDs must be valid Sui values. Limits are capped by the tool schemas to avoid
+unbounded network requests.
 
-## What this does not do yet
+### Wallet and balance tools
 
-No policy limits, no separate signer process, no simulation summary, no passkey, no Move vault. A transfer from the MCP tool is a real testnet transaction. Those later boundaries are specified in [docs/DESIGN.md](../docs/DESIGN.md).
+| Tool | Inputs | Behavior |
+|---|---|---|
+| `get_address` | none | Returns the local sender wallet address. Read-only. |
+| `get_balance` | `address` optional | Reads all token balances. Omitting `address` uses the local sender wallet. Read-only. |
+| `list_coins` | `address`, `coinType`, `limit` optional | Lists individual coin objects, balances, and IDs. Read-only. |
+| `list_owned_objects` | `address`, `type`, `limit` optional | Lists objects owned by an address, with JSON and display data when available. Read-only. |
+
+### Object and Move inspection tools
+
+| Tool | Inputs | Behavior |
+|---|---|---|
+| `get_object` | `objectId` | Reads complete object metadata, content, display data, and previous transaction. Read-only. |
+| `get_objects` | `objectIds` | Reads multiple objects in one request. Read-only. |
+| `get_nft` | `objectId` | Reads an object's type, display metadata, and JSON content. Read-only. |
+| `list_dynamic_fields` | `parentId`, `limit`, `includeValue` optional | Lists dynamic fields attached to an object. Read-only. |
+| `get_dynamic_field` | `parentId`, `nameType`, `nameBcsBase64` | Reads a dynamic field value using its BCS-encoded name. Read-only. |
+| `get_dynamic_object_field` | `parentId`, `nameType`, `nameBcsBase64` | Reads a child object stored in a dynamic object field. Read-only. |
+| `get_coin_metadata` | `coinType` | Reads coin name, symbol, decimals, description, and icon URL. Read-only. |
+| `get_move_function` | `packageId`, `moduleName`, `functionName` | Reads a Move function's visibility, entry status, parameters, and returns. Read-only. |
+
+### Transaction, event, and network tools
+
+| Tool | Inputs | Behavior |
+|---|---|---|
+| `get_transaction` | `digest` | Reads transaction status, effects, events, balance changes, and transaction data. Read-only. |
+| `list_transactions` | `address`, `limit` optional | Lists recent transactions sent by an address. Read-only. |
+| `list_events` | one of `sender`, `eventType`, `emitModule`; `limit`, `order` optional | Queries recent on-chain events. Read-only. |
+| `estimate_gas` | `transactionBase64` | Simulates serialized transaction bytes without signing or submitting. Read-only. |
+| `get_chain_info` | none | Reads chain identity, protocol configuration, system state, and reference gas price. Read-only. |
+| `resolve_name` | exactly one of `name` or `address` | Resolves a SuiNS name to an address or an address to its default name. Read-only. |
+| `resolve_mvr` | `packages` or `types` | Resolves Move Registry package and type names. Read-only. |
+| `wait_for_transaction` | `digest`, `timeoutMs` optional | Waits for a transaction to checkpoint and reports its final result. It does not submit a transaction. |
+
+### Testnet write tools
+
+These tools mutate testnet state. They use the local sender key and cannot be
+undone. In the Cipher chat, Cipher must explain the action and ask for clear
+confirmation in a separate message before calling a write tool.
+
+| Tool | Inputs | Behavior |
+|---|---|---|
+| `transfer_sui` | `to`, `amount` | Sends SUI from the local sender wallet. Gas is paid automatically and the tool waits for confirmation. |
+| `request_faucet` | none | Requests testnet SUI for the local sender wallet and waits for faucet confirmation. Faucet limits apply. |
+| `split_coin` | `coinId`, `amount`, `recipient` optional | Splits a local SUI coin. The new coin stays with the sender unless `recipient` is supplied. |
+| `merge_coins` | `primaryCoinId`, `coinIds` | Merges local SUI coin objects into the primary coin. |
+
+Write tools intentionally do not expose secret keys. Token transfers other than
+SUI, staking, unstaking, arbitrary Move calls, and generic serialized
+transaction submission are not enabled in this milestone.
+
+## Local Cipher web UI
+
+The repository's `demo-ui` app is the intended frontend. Start it from the
+repository root in a second terminal:
+
+```powershell
+cd demo-ui
+npm install
+npm run dev
+```
+
+Open http://127.0.0.1:3000/chat. The UI starts `wallet-mcp/build/index.js`
+over stdio and discovers the registered tools dynamically. Build wallet-mcp
+first whenever its TypeScript changes.
+
+For Claude API access, create `demo-ui/.env.local`:
+
+```text
+ANTHROPIC_API_KEY=your-key-here
+```
+
+Keep the key server-side. Do not put it in browser JavaScript, `.mcp.json`, a
+tracked README, or a commit.
+
+The optional `wallet-mcp` web prototype can be started with `npm run web`, but
+it is not the `demo-ui` frontend used by the `testdemo-ui` branch.
+
+## Security boundary
+
+This is a local testnet experiment, not a production wallet. The current
+implementation signs in the MCP process with a local Ed25519 key. Signing is
+restricted to testnet, and the UI confirmation prompt is conversational rather
+than a hardware-backed approval boundary.
+
+Not implemented yet: a separate signer process, policy limits, passkeys,
+hardware-wallet approval, production secret storage, arbitrary Move call
+authorization, token transfer policies, staking policies, and a production
+transaction approval workflow.
+
+See [docs/DESIGN.md](../docs/DESIGN.md) for the architecture and roadmap.
