@@ -53,9 +53,11 @@ npm run build
 | Tool | Input | What it does |
 |---|---|---|
 | `get_balance` | `address` optional | Reads balances from the chain. Omit `address` to use the local wallet. |
-| `transfer_sui` | `to`, `amount` | Sends testnet SUI. `amount` is a decimal string such as `"0.01"`. |
+| `vault_status` | none | Reads the spending vault: balance, per-spend limit, total spent, paused flag. |
+| `vault_spend` | `to`, `amount`, `dryRun` optional | Pays from the vault. The contract enforces the limit, pause, and revocation. |
+| `transfer_sui` | `to`, `amount` | Sends testnet SUI from the agent's own wallet. **Disabled by default** because it bypasses the vault. Set `SUI_ENABLE_DIRECT_TRANSFER=true` to register it. |
 
-`transfer_sui` does not take a secret key. Run `npm run setup` before using the tools.
+The agent should hold only enough SUI for gas and spend through `vault_spend`. No tool takes a secret key. Run `npm run setup` before using the tools.
 
 ### Team API key
 

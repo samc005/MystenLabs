@@ -1,16 +1,20 @@
-// Usage: npm run transfer -- <recipient> <amount>
-// Example: npm run transfer -- 0xabc... 0.01
+// Usage: npm run transfer -- <recipient> <amount> [--dry-run]
+// Example: npm run transfer -- 0xabc... 0.01 --dry-run
 
 import { parseToMist } from "@mysten/sui/utils";
 import { createSuiClient } from "../blockchain/client.js";
-import { formatTransferReceipt, transferSui } from "../blockchain/transfer.js";
+import { dryRunTransferSui, formatDryRun, formatTransferReceipt, transferSui } from "../blockchain/transfer.js";
 import { requireWallet } from "../blockchain/wallet.js";
 import { resolveNetwork } from "../config.js";
 
 async function main() {
-  const [recipient, amount] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const dryRun = args.includes("--dry-run");
+  const [recipient, amount] = args.filter((arg) => arg !== "--dry-run");
   if (!recipient || !amount) {
-    throw new Error('Usage: npm run transfer -- <recipient> <amount>\nExample: npm run transfer -- 0xabc... 0.01');
+    throw new Error(
+      "Usage: npm run transfer -- <recipient> <amount> [--dry-run]\nExample: npm run transfer -- 0xabc... 0.01 --dry-run",
+    );
   }
   let amountMist: bigint;
   try {
@@ -21,14 +25,18 @@ async function main() {
 
   const network = resolveNetwork();
   const wallet = await requireWallet(network);
-  const receipt = await transferSui({
+  const input = {
     client: createSuiClient(network),
     network,
     signer: wallet.keypair,
     recipient,
     amountMist,
-  });
-  console.log(formatTransferReceipt(receipt));
+  };
+  if (dryRun) {
+    console.log(formatDryRun(await dryRunTransferSui(input)));
+    return;
+  }
+  console.log(formatTransferReceipt(await transferSui(input)));
 }
 
 main().catch((error) => {

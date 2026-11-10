@@ -10,6 +10,8 @@
     "setup": "tsx src/scripts/setup.ts",
     "balance": "tsx src/scripts/balance.ts",
     "transfer": "tsx src/scripts/transfer.ts",
+    "vault": "tsx src/scripts/vault.ts",
+    "boundaries": "tsx src/scripts/boundaries.ts",
     "demo": "tsx src/scripts/demo.ts"
   },
   "keywords": [],
