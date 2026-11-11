@@ -140,6 +140,120 @@ button.small-btn {
   font-size: 15px;
 }
 
+/* Trade approval card */
+
+.proposal-card {
+  align-self: stretch;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  display: grid;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.proposal-card.executed,
+.proposal-card.approved {
+  border-left-color: var(--ok);
+}
+
+.proposal-card.rejected,
+.proposal-card.expired,
+.proposal-card.failed,
+.proposal-card.error {
+  border-left-color: var(--error);
+}
+
+.proposal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.status-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.status-pill.approved,
+.status-pill.executed {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.status-pill.rejected,
+.status-pill.expired,
+.status-pill.failed {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.proposal-trade {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.proposal-arrow {
+  color: var(--muted);
+}
+
+.proposal-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.proposal-facts dt {
+  color: var(--muted);
+}
+
+.proposal-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.proposal-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.proposal-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.proposal-links {
+  display: flex;
+  gap: 14px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.proposal-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--error-soft);
+  color: var(--error);
+  font-size: 13px;
+  word-break: break-word;
+}
+
 /* Wallets */
 
 .wallet {
