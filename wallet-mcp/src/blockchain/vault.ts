@@ -48,6 +48,49 @@ export interface IntentInfo {
   expiryMs: number;
 }
 
+/** Owner-set rules on direct spends: a per-epoch cap and an optional recipient allowlist. */
+export interface SpendPolicyInfo {
+  dailyCapMist: bigint;
+  enforceRecipients: boolean;
+  windowEpoch: bigint;
+  spentInWindowMist: bigint;
+}
+
+/** Owner-set rules on staking: size cap, liquid reserve and position limit. */
+export interface StakePolicyInfo {
+  maxStakedMist: bigint;
+  minReserveMist: bigint;
+  maxPositions: bigint;
+  stakedTotalMist: bigint;
+  positions: bigint;
+}
+
+/** An owner-approved one-off payment waiting for the agent to execute it. */
+export interface SpendIntentInfo {
+  intentId: string;
+  recipient: string;
+  amountMist: bigint;
+  expiryMs: number;
+}
+
+/** A standing permission to swap one pair within limits and above a price floor. */
+export interface TradeRuleInfo {
+  inType: string;
+  outType: string;
+  inSymbol: string;
+  outSymbol: string;
+  inDecimals: number;
+  outDecimals: number;
+  maxPerTrade: bigint;
+  maxPerEpoch: bigint;
+  /** The agent must receive at least amountIn * rateNum / rateDen (rounded up) in raw units. */
+  rateNum: bigint;
+  rateDen: bigint;
+  expiryMs: number;
+  windowEpoch: bigint;
+  spentInWindow: bigint;
+}
+
 /** Current on-chain state of the spending vault. */
 export interface VaultStatus {
   vaultId: string;
@@ -63,6 +106,16 @@ export interface VaultStatus {
   trading: TradingBalance[];
   /** Owner-approved trades the agent may still execute. */
   intents: IntentInfo[];
+  /** The network's current epoch; per-epoch counters reset when it changes. */
+  currentEpoch: bigint;
+  spendPolicy: SpendPolicyInfo | null;
+  /** Addresses the agent may pay directly when the spend policy enforces recipients. */
+  allowedRecipients: string[];
+  stakePolicy: StakePolicyInfo | null;
+  /** Owner-approved one-off payments the agent may still execute. */
+  spendIntents: SpendIntentInfo[];
+  /** Standing trade rules, one per coin pair. */
+  tradeRules: TradeRuleInfo[];
 }
 
 /** Move serializes u64 as a string and Balance<T> as either a string or { value }. */
@@ -86,17 +139,18 @@ export async function getVaultStatus(
   });
   const fields = object.json;
   if (!fields) throw new Error(`Vault ${config.vaultId} has no readable content.`);
-  const { allowedValidators, stakes, trading, intents } = await readVaultDynamicFields(client, config.vaultId);
+  const [dynamic, system] = await Promise.all([
+    readVaultDynamicFields(client, config.vaultId),
+    client.getCurrentSystemState(),
+  ]);
   return {
     vaultId: config.vaultId,
     balanceMist: toBigInt(fields.balance, "balance"),
     perTxLimitMist: toBigInt(fields.per_tx_limit, "per_tx_limit"),
     totalSpentMist: toBigInt(fields.total_spent, "total_spent"),
     paused: fields.paused === true,
-    allowedValidators,
-    stakes,
-    trading,
-    intents,
+    currentEpoch: BigInt(system.systemState.epoch),
+    ...dynamic,
   };
 }
 
@@ -131,6 +185,11 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   const stakedSuiIds: string[] = [];
   const tradingFields: { fieldId: string; coinType: string }[] = [];
   const intentIds: string[] = [];
+  const allowedRecipients: string[] = [];
+  const spendIntentIds: string[] = [];
+  let spendPolicyFieldId: string | null = null;
+  let stakePolicyFieldId: string | null = null;
+  const ruleFields: { fieldId: string; inType: string; outType: string }[] = [];
 
   let cursor: string | null = null;
   do {
@@ -149,6 +208,17 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
         if (coinType) tradingFields.push({ fieldId: entry.fieldId, coinType });
       } else if (entry.$kind === "DynamicObject" && entry.name.type.includes("::spending_vault::IntentKey")) {
         intentIds.push(entry.childId);
+      } else if (entry.name.type.includes("::spending_vault::AllowedRecipient")) {
+        allowedRecipients.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
+      } else if (entry.$kind === "DynamicObject" && entry.name.type.includes("::spending_vault::SpendIntentKey")) {
+        spendIntentIds.push(entry.childId);
+      } else if (entry.$kind === "DynamicField" && entry.name.type.includes("::spending_vault::SpendPolicyKey")) {
+        spendPolicyFieldId = entry.fieldId;
+      } else if (entry.$kind === "DynamicField" && entry.name.type.includes("::spending_vault::StakePolicyKey")) {
+        stakePolicyFieldId = entry.fieldId;
+      } else if (entry.$kind === "DynamicField" && entry.name.type.includes("::spending_vault::TradeRuleKey<")) {
+        const [inType, outType] = typeArguments(entry.name.type);
+        if (inType && outType) ruleFields.push({ fieldId: entry.fieldId, inType, outType });
       }
     }
     cursor = page.hasNextPage ? page.cursor : null;
@@ -202,7 +272,171 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
       });
     }
   }
-  return { allowedValidators, stakes, trading, intents };
+
+  // A dynamic field's JSON is { id, name, value }; for struct values `value` holds the fields.
+  const policyIds = [spendPolicyFieldId, stakePolicyFieldId].filter((id): id is string => id !== null);
+  const policyObjects = new Map<string, Record<string, unknown>>();
+  if (policyIds.length > 0 || spendIntentIds.length > 0 || ruleFields.length > 0) {
+    const { objects } = await client.getObjects({
+      objectIds: [...policyIds, ...spendIntentIds, ...ruleFields.map((r) => r.fieldId)],
+      include: { json: true },
+    });
+    for (const object of objects) {
+      if (object instanceof Error || !object.json) continue;
+      policyObjects.set(object.objectId, object.json as Record<string, unknown>);
+    }
+  }
+  const valueOf = (id: string | null): Record<string, unknown> | null => {
+    if (!id) return null;
+    const json = policyObjects.get(id);
+    const value = json?.value;
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  };
+
+  const spendValue = valueOf(spendPolicyFieldId);
+  const spendPolicy: SpendPolicyInfo | null = spendValue
+    ? {
+        dailyCapMist: toBigInt(spendValue.daily_cap, "daily_cap"),
+        enforceRecipients: spendValue.enforce_recipients === true,
+        windowEpoch: toBigInt(spendValue.window_epoch, "window_epoch"),
+        spentInWindowMist: toBigInt(spendValue.spent_in_window, "spent_in_window"),
+      }
+    : null;
+
+  const stakeValue = valueOf(stakePolicyFieldId);
+  const stakePolicy: StakePolicyInfo | null = stakeValue
+    ? {
+        maxStakedMist: toBigInt(stakeValue.max_staked, "max_staked"),
+        minReserveMist: toBigInt(stakeValue.min_reserve, "min_reserve"),
+        maxPositions: toBigInt(stakeValue.max_positions, "max_positions"),
+        stakedTotalMist: toBigInt(stakeValue.staked_total, "staked_total"),
+        positions: toBigInt(stakeValue.positions, "positions"),
+      }
+    : null;
+
+  const spendIntents: SpendIntentInfo[] = [];
+  for (const id of spendIntentIds) {
+    const json = policyObjects.get(id);
+    if (!json) continue;
+    spendIntents.push({
+      intentId: id,
+      recipient: normalizeSuiAddress(String(json.recipient)),
+      amountMist: toBigInt(json.amount, "amount"),
+      expiryMs: Number(toBigInt(json.expiry_ms, "expiry_ms")),
+    });
+  }
+
+  const tradeRules: TradeRuleInfo[] = [];
+  for (const rule of ruleFields) {
+    const value = valueOf(rule.fieldId);
+    if (!value) continue;
+    const [inInfo, outInfo] = await Promise.all([getCoinInfo(client, rule.inType), getCoinInfo(client, rule.outType)]);
+    tradeRules.push({
+      inType: rule.inType,
+      outType: rule.outType,
+      inSymbol: inInfo.symbol,
+      outSymbol: outInfo.symbol,
+      inDecimals: inInfo.decimals,
+      outDecimals: outInfo.decimals,
+      maxPerTrade: toBigInt(value.max_per_trade, "max_per_trade"),
+      maxPerEpoch: toBigInt(value.max_per_epoch, "max_per_epoch"),
+      rateNum: toBigInt(value.rate_num, "rate_num"),
+      rateDen: toBigInt(value.rate_den, "rate_den"),
+      expiryMs: Number(toBigInt(value.expiry_ms, "expiry_ms")),
+      windowEpoch: toBigInt(value.window_epoch, "window_epoch"),
+      spentInWindow: toBigInt(value.spent_in_window, "spent_in_window"),
+    });
+  }
+
+  return {
+    allowedValidators,
+    stakes,
+    trading,
+    intents,
+    spendPolicy,
+    allowedRecipients,
+    stakePolicy,
+    spendIntents,
+    tradeRules,
+  };
+}
+
+/** How much of the per-epoch spend cap is left, counting a stale window as empty. */
+export function spendCapRemaining(status: VaultStatus): bigint | null {
+  const p = status.spendPolicy;
+  if (!p) return null;
+  const spent = p.windowEpoch === status.currentEpoch ? p.spentInWindowMist : 0n;
+  return p.dailyCapMist > spent ? p.dailyCapMist - spent : 0n;
+}
+
+/** The smallest output the rule accepts for selling `amountIn`, rounded up like the contract. */
+export function ruleFloor(rule: Pick<TradeRuleInfo, "rateNum" | "rateDen">, amountIn: bigint): bigint {
+  return (amountIn * rule.rateNum + rule.rateDen - 1n) / rule.rateDen;
+}
+
+export type RuleVerdict =
+  | { covered: true; rule: TradeRuleInfo }
+  | { covered: false; rule: TradeRuleInfo | null; reason: string };
+
+/**
+ * Whether a standing trade rule lets the agent run this swap with no owner approval.
+ * Mirrors begin_swap_auto for a clear message; the contract is the boundary.
+ */
+export function evaluateTradeRule(
+  status: VaultStatus,
+  trade: { inType: string; outType: string; amountIn: bigint; minOut: bigint },
+  now = Date.now(),
+): RuleVerdict {
+  const rule = status.tradeRules.find((r) => r.inType === trade.inType && r.outType === trade.outType) ?? null;
+  if (!rule) return { covered: false, rule: null, reason: "no standing rule covers this pair" };
+  const inCoin = { decimals: rule.inDecimals, symbol: rule.inSymbol };
+  const outCoin = { decimals: rule.outDecimals, symbol: rule.outSymbol };
+  if (now > rule.expiryMs) return { covered: false, rule, reason: "the standing rule has expired" };
+  if (trade.amountIn > rule.maxPerTrade) {
+    return { covered: false, rule, reason: `it is over the rule's ${formatAmount(rule.maxPerTrade, inCoin)} per-trade maximum` };
+  }
+  const used = rule.windowEpoch === status.currentEpoch ? rule.spentInWindow : 0n;
+  if (used + trade.amountIn > rule.maxPerEpoch) {
+    return {
+      covered: false,
+      rule,
+      reason: `it would take this epoch's total past the rule's ${formatAmount(rule.maxPerEpoch, inCoin)} (${formatAmount(used, inCoin)} used)`,
+    };
+  }
+  const floor = ruleFloor(rule, trade.amountIn);
+  if (trade.minOut < floor) {
+    return {
+      covered: false,
+      rule,
+      reason: `the price is below the rule's floor (it needs at least ${formatAmount(floor, outCoin)} back)`,
+    };
+  }
+  return { covered: true, rule };
+}
+
+/**
+ * Whether the agent may pay `recipient` `amountMist` directly, or the owner must approve
+ * it first. Mirrors the contract's rules for a clear message; the contract is the boundary.
+ */
+export function classifySpend(
+  status: VaultStatus,
+  recipient: string,
+  amountMist: bigint,
+): { direct: true } | { direct: false; reason: string } {
+  const sui = (mist: bigint) => `${formatUnits(mist, SUI_DECIMALS)} SUI`;
+  if (amountMist > status.perTxLimitMist) {
+    return { direct: false, reason: `${sui(amountMist)} is over the per-spend limit of ${sui(status.perTxLimitMist)}` };
+  }
+  const policy = status.spendPolicy;
+  if (!policy) return { direct: true };
+  if (policy.enforceRecipients && !status.allowedRecipients.includes(normalizeSuiAddress(recipient))) {
+    return { direct: false, reason: `${recipient} is not on the vault's recipient allowlist` };
+  }
+  const remaining = spendCapRemaining(status) ?? 0n;
+  if (amountMist > remaining) {
+    return { direct: false, reason: `${sui(amountMist)} is more than the ${sui(remaining)} left of this epoch's spending cap` };
+  }
+  return { direct: true };
 }
 
 export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vaultConfig()): string {
@@ -229,7 +463,67 @@ export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vau
           )
           .join("\n")}`
       : "Approved trades waiting to run: none",
+    ...formatPolicyLines(status),
   ].join("\n");
+}
+
+function formatPolicyLines(status: VaultStatus): string[] {
+  const sui = (mist: bigint) => `${formatUnits(mist, SUI_DECIMALS)} SUI`;
+  const lines: string[] = [];
+
+  const sp = status.spendPolicy;
+  if (sp) {
+    const remaining = spendCapRemaining(status) ?? 0n;
+    lines.push(
+      `Spend policy: up to ${sui(sp.dailyCapMist)} per epoch (${sui(remaining)} left this epoch), ${
+        sp.enforceRecipients
+          ? `only to allowed recipients: ${status.allowedRecipients.length ? status.allowedRecipients.join(", ") : "none yet"}`
+          : "any recipient"
+      }. Anything outside this needs the owner's approval (propose_spend).`,
+    );
+  } else {
+    lines.push(`Spend policy: none (the agent can pay anyone, up to the per-spend limit, with no total cap)`);
+  }
+  lines.push(
+    status.spendIntents.length
+      ? `Approved payments waiting to run:\n${status.spendIntents
+          .map(
+            (i) =>
+              `  - ${i.intentId}: pay ${sui(i.amountMist)} to ${i.recipient}, expires ${new Date(i.expiryMs).toISOString()}`,
+          )
+          .join("\n")}`
+      : "Approved payments waiting to run: none",
+  );
+
+  const kp = status.stakePolicy;
+  lines.push(
+    kp
+      ? `Stake policy: at most ${sui(kp.maxStakedMist)} staked (${sui(kp.stakedTotalMist)} now), keep ${sui(kp.minReserveMist)} liquid, at most ${kp.maxPositions} positions (${kp.positions} now)`
+      : "Stake policy: none (the agent can stake the whole balance, in any number of positions)",
+  );
+
+  lines.push(
+    status.tradeRules.length
+      ? `Standing trade rules (no per-trade approval needed inside these):\n${status.tradeRules
+          .map((r) => {
+            const stale = r.windowEpoch !== status.currentEpoch;
+            const used = stale ? 0n : r.spentInWindow;
+            const inCoin = { decimals: r.inDecimals, symbol: r.inSymbol };
+            const outCoin = { decimals: r.outDecimals, symbol: r.outSymbol };
+            const perUnit = formatRate(r);
+            return `  - ${r.inSymbol} to ${r.outSymbol}: up to ${formatAmount(r.maxPerTrade, inCoin)} per trade, ${formatAmount(r.maxPerEpoch, inCoin)} per epoch (${formatAmount(used, inCoin)} used), at least ${perUnit} ${r.outSymbol} per ${r.inSymbol}, until ${new Date(r.expiryMs).toISOString()}${Date.now() > r.expiryMs ? " (EXPIRED)" : ""}`;
+          })
+          .join("\n")}`
+      : "Standing trade rules: none (every swap needs the owner's approval)",
+  );
+  return lines;
+}
+
+/** The rule's price floor as a human number: output units per one input unit. */
+export function formatRate(r: Pick<TradeRuleInfo, "rateNum" | "rateDen" | "inDecimals" | "outDecimals">): string {
+  // floor per 1 whole input coin = rateNum / rateDen * 10^inDecimals raw out, shown in whole out coins.
+  const scaled = (r.rateNum * 10n ** BigInt(r.inDecimals) * 1_000_000n) / (r.rateDen * 10n ** BigInt(r.outDecimals));
+  return formatUnits(scaled, 6);
 }
 
 type VaultSpendInput = {
@@ -261,12 +555,20 @@ async function prepareVaultSpend(input: VaultSpendInput) {
   }
   if (input.amountMist > status.perTxLimitMist) {
     throw new Error(
-      `Over the vault's per-spend limit. Requested ${sui(input.amountMist)}, limit is ${sui(status.perTxLimitMist)}.`,
+      `Over the vault's per-spend limit. Requested ${sui(input.amountMist)}, limit is ${sui(status.perTxLimitMist)}. ` +
+        `Larger payments need the owner's approval: call propose_spend instead.`,
     );
   }
   if (input.amountMist > status.balanceMist) {
     throw new Error(
       `The vault only holds ${sui(status.balanceMist)}, which is less than the requested ${sui(input.amountMist)}.`,
+    );
+  }
+  const verdict = classifySpend(status, recipient, input.amountMist);
+  if (!verdict.direct) {
+    throw new Error(
+      `This payment is outside the spending policy: ${verdict.reason}. Nothing was sent. ` +
+        `It needs the owner's approval: call propose_spend, then wait for them to approve it.`,
     );
   }
 
@@ -416,6 +718,22 @@ async function prepareVaultStake(input: VaultStakeInput) {
   }
   if (input.amountMist > status.balanceMist) {
     throw new Error(`The vault only holds ${sui(status.balanceMist)}, which is less than the requested ${sui(input.amountMist)}.`);
+  }
+  const kp = status.stakePolicy;
+  if (kp) {
+    if (kp.stakedTotalMist + input.amountMist > kp.maxStakedMist) {
+      throw new Error(
+        `Over the vault's stake limit: ${sui(kp.stakedTotalMist)} is already staked and the owner allows at most ${sui(kp.maxStakedMist)}.`,
+      );
+    }
+    if (kp.positions + 1n > kp.maxPositions) {
+      throw new Error(`The vault already has ${kp.positions} staking positions, the most the owner allows.`);
+    }
+    if (status.balanceMist - input.amountMist < kp.minReserveMist) {
+      throw new Error(
+        `Staking ${sui(input.amountMist)} would leave less than the ${sui(kp.minReserveMist)} the owner wants kept liquid in the vault.`,
+      );
+    }
   }
 
   const tx = new Transaction();

@@ -19,7 +19,7 @@ import { assertTestnet, explorerTxUrl, tradingConfig, vaultConfig } from "../con
 import type { SuiNetwork } from "./client.js";
 import { formatAmount, parseUnits } from "./coins.js";
 import { getDex } from "./dex.js";
-import { requireProposal, updateProposal, type Proposal } from "./proposals.js";
+import { isSpendProposal, requireProposal, updateProposal, type Proposal, type SpendProposal } from "./proposals.js";
 import { netGasMist } from "./transfer.js";
 import { getVaultStatus } from "./vault.js";
 import { requireAddress } from "./wallet.js";
@@ -232,6 +232,7 @@ export async function approveProposal(ctx: OwnerContext, proposalId: string): Pr
   if (proposal.status !== "pending") {
     throw new Error(`Proposal ${proposal.id} is ${proposal.status}; only a pending proposal can be approved.`);
   }
+  if (isSpendProposal(proposal)) return approveSpendProposal(ctx, proposal);
   const amountIn = BigInt(proposal.amountIn);
   const minOut = BigInt(proposal.minOut);
 
@@ -263,6 +264,209 @@ export async function approveProposal(ctx: OwnerContext, proposalId: string): Pr
     approvalDigest: receipt.digest,
   });
   return { proposal: updated, receipt };
+}
+
+/** Approve a payment outside the policy: signs create_spend_intent for exactly the stored terms. */
+async function approveSpendProposal(
+  ctx: OwnerContext,
+  proposal: SpendProposal,
+): Promise<{ proposal: Proposal; receipt: CreatedIntent }> {
+  const amountMist = BigInt(proposal.amountMist);
+  const status = await getVaultStatus(ctx.client);
+  if (status.paused) throw new Error("The vault is paused. Unpause it before approving payments.");
+  if (status.balanceMist < amountMist) {
+    throw new Error(`The vault only holds ${formatAmount(status.balanceMist, { decimals: 9, symbol: "SUI" })}.`);
+  }
+  const receipt = await createSpendIntent(ctx, {
+    recipient: proposal.recipient,
+    amountMist,
+    ttlMs: proposal.intentTtlMs,
+  });
+  const updated = await updateProposal(proposal.id, {
+    status: "approved",
+    intentId: receipt.intentId,
+    intentExpiryMs: receipt.expiryMs,
+    approvalDigest: receipt.digest,
+  });
+  return { proposal: updated, receipt };
+}
+
+/** Approve one payment on-chain, to this recipient and amount only. The agent can run it once. */
+export async function createSpendIntent(
+  ctx: OwnerContext,
+  input: { recipient: string; amountMist: bigint; ttlMs: number },
+): Promise<CreatedIntent> {
+  const { packageId, vaultId } = vaultConfig();
+  const expiryMs = Date.now() + input.ttlMs;
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::create_spend_intent`,
+    arguments: [
+      tx.object(ctx.ownerCapId),
+      tx.object(vaultId),
+      tx.pure.address(requireAddress(input.recipient)),
+      tx.pure.u64(input.amountMist),
+      tx.pure.u64(expiryMs),
+      tx.object.clock(),
+    ],
+  });
+  const receipt = await execute(ctx, tx);
+  const created = receipt.events.find((event) => event.type.includes("::spending_vault::SpendIntentCreated"));
+  const intentId = created?.json?.intent_id;
+  if (typeof intentId !== "string") throw new Error("The approval was created but its ID was not in the events.");
+  return { ...receipt, intentId, expiryMs };
+}
+
+export async function cancelSpendIntent(ctx: OwnerContext, intentId: string): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::cancel_spend_intent`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.id(intentId)],
+  });
+  return execute(ctx, tx);
+}
+
+// === Policies: limits the agent cannot exceed ===
+
+/** Cap total direct spending per epoch (about a day) and optionally restrict who can be paid. */
+export async function setSpendPolicy(
+  ctx: OwnerContext,
+  input: { dailyCapMist: bigint; enforceRecipients: boolean },
+): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::set_spend_policy`,
+    arguments: [
+      tx.object(ctx.ownerCapId),
+      tx.object(vaultId),
+      tx.pure.u64(input.dailyCapMist),
+      tx.pure.bool(input.enforceRecipients),
+    ],
+  });
+  return execute(ctx, tx);
+}
+
+export async function clearSpendPolicy(ctx: OwnerContext): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::clear_spend_policy`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId)],
+  });
+  return execute(ctx, tx);
+}
+
+export async function setRecipientAllowed(ctx: OwnerContext, recipient: string, allow: boolean): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::${allow ? "allow_recipient" : "disallow_recipient"}`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.address(requireAddress(recipient))],
+  });
+  return execute(ctx, tx);
+}
+
+/**
+ * Cap staking: total staked, a liquid reserve the agent cannot stake into, and the number
+ * of positions. Counters for positions opened before the policy existed are synced from the
+ * vault's actual receipts, so the caps are measured against what is really staked.
+ */
+export async function setStakePolicy(
+  ctx: OwnerContext,
+  input: { maxStakedMist: bigint; minReserveMist: bigint; maxPositions: bigint },
+): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const status = await getVaultStatus(ctx.client);
+  const actualTotal = status.stakes.reduce((sum, s) => sum + s.principalMist, 0n);
+  const actualPositions = BigInt(status.stakes.length);
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::set_stake_policy`,
+    arguments: [
+      tx.object(ctx.ownerCapId),
+      tx.object(vaultId),
+      tx.pure.u64(input.maxStakedMist),
+      tx.pure.u64(input.minReserveMist),
+      tx.pure.u64(input.maxPositions),
+    ],
+  });
+  tx.moveCall({
+    target: `${packageId}::spending_vault::sync_stake_counters`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.u64(actualTotal), tx.pure.u64(actualPositions)],
+  });
+  return execute(ctx, tx);
+}
+
+export async function clearStakePolicy(ctx: OwnerContext): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::clear_stake_policy`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId)],
+  });
+  return execute(ctx, tx);
+}
+
+// === Standing trade rules ===
+
+/**
+ * Convert a human price ("1.8" tUSDC per 1 SUI) to the raw ratio the contract stores:
+ * raw out per raw in = price * 10^outDecimals / 10^inDecimals.
+ */
+export function rateToRaw(price: string, inDecimals: number, outDecimals: number): { num: bigint; den: bigint } {
+  const num = parseUnits(price, outDecimals);
+  if (num <= 0n) throw new Error("The price floor must be greater than 0.");
+  return { num, den: 10n ** BigInt(inDecimals) };
+}
+
+/**
+ * Let the agent swap `inType` for `outType` with no per-trade approval, inside these limits:
+ * each trade at most `maxPerTrade`, at most `maxPerEpoch` per epoch, and never for less than
+ * the price floor. The price floor is the owner's number; the contract has no price oracle.
+ */
+export async function setTradeRule(
+  ctx: OwnerContext,
+  input: {
+    inType: string;
+    outType: string;
+    maxPerTrade: bigint;
+    maxPerEpoch: bigint;
+    rateNum: bigint;
+    rateDen: bigint;
+    ttlMs: number;
+  },
+): Promise<OwnerReceipt & { expiryMs: number }> {
+  const { packageId, vaultId } = vaultConfig();
+  const expiryMs = Date.now() + input.ttlMs;
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::set_trade_rule`,
+    typeArguments: [input.inType, input.outType],
+    arguments: [
+      tx.object(ctx.ownerCapId),
+      tx.object(vaultId),
+      tx.pure.u64(input.maxPerTrade),
+      tx.pure.u64(input.maxPerEpoch),
+      tx.pure.u64(input.rateNum),
+      tx.pure.u64(input.rateDen),
+      tx.pure.u64(expiryMs),
+      tx.object.clock(),
+    ],
+  });
+  return { ...(await execute(ctx, tx)), expiryMs };
+}
+
+export async function removeTradeRule(ctx: OwnerContext, inType: string, outType: string): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::remove_trade_rule`,
+    typeArguments: [inType, outType],
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId)],
+  });
+  return execute(ctx, tx);
 }
 
 export async function rejectProposal(proposalId: string): Promise<Proposal> {

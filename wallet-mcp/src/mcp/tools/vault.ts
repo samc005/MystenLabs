@@ -27,7 +27,7 @@ export function registerVault(server: McpServer): void {
     "vault_status",
     {
       description:
-        "Read the spending vault: how much SUI it holds, the per-spend limit, total spent so far, whether the owner has paused it, which validators the agent may stake with, and open staking positions. Call this before vault_spend or vault_stake.",
+        "Read the spending vault: how much SUI it holds, the per-spend limit, total spent so far, whether the owner has paused it, which validators the agent may stake with, open staking positions, and the owner's policies (spending cap and recipient allowlist, stake limits, standing trade rules). Call this before vault_spend or vault_stake.",
       inputSchema: z.object({}),
     },
     async () => {
@@ -46,7 +46,7 @@ export function registerVault(server: McpServer): void {
     "vault_spend",
     {
       description:
-        "Pay a recipient in testnet SUI from the spending vault. The on-chain contract enforces the vault's rules: a per-spend limit, the vault's balance, an owner pause switch, and owner revocation. The request is rejected on-chain if any rule fails. Amount is a decimal string in SUI, such as \"0.01\". Set dryRun to true to simulate without sending. A real spend is irreversible.",
+        "Pay a recipient in testnet SUI from the spending vault. The on-chain contract enforces the vault's rules: a per-spend limit, a per-epoch spending cap, an optional recipient allowlist, the vault's balance, an owner pause switch, and owner revocation. The request is rejected on-chain if any rule fails. If the payment is outside the policy, use propose_spend to ask the owner for approval instead. Amount is a decimal string in SUI, such as \"0.01\". Set dryRun to true to simulate without sending. A real spend is irreversible.",
       inputSchema: z.object({
         to: z.string().describe("Recipient Sui address (0x...)."),
         amount: z.string().describe('Amount of SUI to pay, as a decimal string such as "0.01".'),
@@ -84,7 +84,7 @@ export function registerVault(server: McpServer): void {
     "vault_stake",
     {
       description:
-        "Stake testnet SUI from the spending vault with a validator to earn staking rewards. The validator must be on the vault's allowlist (see vault_status); only the vault owner can add validators. Minimum 1 SUI per stake. The staking receipt stays inside the vault, so only the owner can unstake: this tool cannot withdraw a stake. The per-spend limit does not apply to staking. Amount is a decimal string in SUI, such as \"1\". Set dryRun to true to simulate without sending. A real stake takes effect next epoch.",
+        "Stake testnet SUI from the spending vault with a validator to earn staking rewards. The validator must be on the vault's allowlist (see vault_status); only the vault owner can add validators. Minimum 1 SUI per stake. The staking receipt stays inside the vault, so only the owner can unstake: this tool cannot withdraw a stake. The per-spend limit does not apply to staking, but the owner's stake policy (a staked-total cap, a liquid reserve, a position limit) does when one is set; see vault_status. Amount is a decimal string in SUI, such as \"1\". Set dryRun to true to simulate without sending. A real stake takes effect next epoch.",
       inputSchema: z.object({
         validator: z.string().describe("Validator Sui address (0x...). Must be on the vault's allowlist."),
         amount: z.string().describe('Amount of SUI to stake, as a decimal string such as "1".'),

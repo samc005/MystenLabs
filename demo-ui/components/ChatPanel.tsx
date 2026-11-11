@@ -152,7 +152,7 @@ export function ChatPanel({ onToolResult }: Props) {
           if (item.kind === "assistant") return <div key={i} className="bubble assistant">{item.text}</div>;
           if (item.kind === "error") return <div key={i} className="bubble error">{item.text}</div>;
           const pending = item.output === undefined;
-          const proposalId = item.name === "propose_trade" && !item.isError ? item.output?.match(PROPOSAL_ID)?.[1] : undefined;
+          const proposalId = (item.name === "propose_trade" || item.name === "propose_spend") && !item.isError ? item.output?.match(PROPOSAL_ID)?.[1] : undefined;
           return (
             <Fragment key={item.id}>
               <div className={item.isError ? "tool-card error" : "tool-card"}>

@@ -8,17 +8,27 @@ import {
   allowValidator,
   approveProposal,
   cancelIntent,
+  cancelSpendIntent,
+  clearSpendPolicy,
+  clearStakePolicy,
   createIntent,
+  createSpendIntent,
   depositTrading,
   loadOwnerContext,
+  rateToRaw,
   rejectProposal,
   releaseSui,
+  removeTradeRule,
   setPoolPrice,
+  setRecipientAllowed,
+  setSpendPolicy,
+  setStakePolicy,
+  setTradeRule,
   unstake,
   withdrawTrading,
   type OwnerReceipt,
 } from "../blockchain/owner.js";
-import { describeProposal, listProposals } from "../blockchain/proposals.js";
+import { describeProposal, isSpendProposal, listProposals } from "../blockchain/proposals.js";
 import { formatVaultStatus, getVaultStatus } from "../blockchain/vault.js";
 import { resolveNetwork } from "../config.js";
 
@@ -33,8 +43,22 @@ const USAGE = `Usage: npm run owner -- <command>
                                          approve one trade directly, e.g. intent SUI tUSDC 0.5 0.9 10
   cancel <intentId>                      withdraw approval for a trade
   proposals                              list trades the agent proposed in chat
-  approve <proposalId>                   approve a proposal (signs create_intent)
+  approve <proposalId>                   approve a proposal (a swap, or a payment outside the policy)
   reject <proposalId>                    reject a proposal
+  spend-intent <to> <sui> [ttlMinutes]   approve one payment directly, to this recipient and amount only
+  cancel-spend <intentId>                withdraw approval for a payment
+  spend-policy <sui-per-epoch> [any|allowlist]
+                                         cap direct spending per epoch (~1 day); 'allowlist' also limits who can be paid
+  clear-spend-policy                     remove the spending cap and allowlist requirement
+  allow-recipient <address>              add to the recipient allowlist
+  disallow-recipient <address>
+  stake-policy <maxStakedSui> <reserveSui> <maxPositions>
+                                         cap staking: total staked, SUI that must stay liquid, number of positions
+  clear-stake-policy                     remove the stake limits
+  trade-rule <sell> <buy> <maxPerTrade> <maxPerEpoch> <minPrice> [ttlHours]
+                                         let the agent swap with no per-trade approval inside these limits.
+                                         minPrice is the least you accept: <buy> per 1 <sell>, e.g. trade-rule SUI tUSDC 0.5 1 1.5 24
+  remove-trade-rule <sell> <buy>         end a standing trade rule
   allow-validator <address>              let the agent stake with a validator
   disallow-validator <address>
   unstake <stakedSuiId>                  unstake a position (funds return to the vault)
@@ -128,8 +152,108 @@ async function main() {
       const [id] = args;
       if (!id) throw new Error(USAGE);
       const { proposal, receipt } = await approveProposal(ctx, id);
-      printReceipt("Approved on-chain. The agent can now run this trade once.", receipt);
+      printReceipt(
+        `Approved on-chain. The agent can now run this ${isSpendProposal(proposal) ? "payment" : "trade"} once.`,
+        receipt,
+      );
       console.log(describeProposal(proposal));
+      return;
+    }
+    case "spend-intent": {
+      const [to, amount, ttl] = args;
+      if (!to || !amount) throw new Error(USAGE);
+      const ttlMinutes = ttl ? Number(ttl) : 5;
+      if (!Number.isFinite(ttlMinutes) || ttlMinutes <= 0) throw new Error("ttlMinutes must be a positive number.");
+      const receipt = await createSpendIntent(ctx, {
+        recipient: to,
+        amountMist: parseUnits(amount, 9),
+        ttlMs: ttlMinutes * 60_000,
+      });
+      printReceipt(`Approved: pay ${amount} SUI to ${to}.`, receipt);
+      console.log(`Intent: ${receipt.intentId}`);
+      console.log(`Expires: ${new Date(receipt.expiryMs).toISOString()}`);
+      return;
+    }
+    case "cancel-spend": {
+      const [id] = args;
+      if (!id) throw new Error(USAGE);
+      printReceipt(`Cancelled payment approval ${id}.`, await cancelSpendIntent(ctx, id));
+      return;
+    }
+    case "spend-policy": {
+      const [cap, mode] = args;
+      if (!cap) throw new Error(USAGE);
+      if (mode && mode !== "any" && mode !== "allowlist") throw new Error(USAGE);
+      const enforceRecipients = mode === "allowlist";
+      printReceipt(
+        `Spending cap set to ${cap} SUI per epoch. ${enforceRecipients ? "Only allowlisted recipients can be paid directly." : "Any recipient can be paid directly, up to the cap."}`,
+        await setSpendPolicy(ctx, { dailyCapMist: parseUnits(cap, 9), enforceRecipients }),
+      );
+      return;
+    }
+    case "clear-spend-policy": {
+      printReceipt("Removed the spending cap and recipient requirement.", await clearSpendPolicy(ctx));
+      return;
+    }
+    case "allow-recipient":
+    case "disallow-recipient": {
+      const [recipient] = args;
+      if (!recipient) throw new Error(USAGE);
+      const allow = command === "allow-recipient";
+      printReceipt(
+        `${allow ? "Allowed" : "Removed"} recipient ${recipient}.`,
+        await setRecipientAllowed(ctx, recipient, allow),
+      );
+      return;
+    }
+    case "stake-policy": {
+      const [maxStaked, reserve, positions] = args;
+      if (!maxStaked || !reserve || !positions) throw new Error(USAGE);
+      const maxPositions = BigInt(positions);
+      printReceipt(
+        `Stake policy set: at most ${maxStaked} SUI staked, ${reserve} SUI kept liquid, at most ${maxPositions} positions. Counters synced to the vault's actual stakes.`,
+        await setStakePolicy(ctx, {
+          maxStakedMist: parseUnits(maxStaked, 9),
+          minReserveMist: parseUnits(reserve, 9),
+          maxPositions,
+        }),
+      );
+      return;
+    }
+    case "clear-stake-policy": {
+      printReceipt("Removed the stake limits.", await clearStakePolicy(ctx));
+      return;
+    }
+    case "trade-rule": {
+      const [sell, buy, maxTrade, maxEpoch, minPrice, ttl] = args;
+      if (!sell || !buy || !maxTrade || !maxEpoch || !minPrice) throw new Error(USAGE);
+      const inType = resolveCoinType(sell);
+      const outType = resolveCoinType(buy);
+      const [inInfo, outInfo] = await Promise.all([getCoinInfo(client, inType), getCoinInfo(client, outType)]);
+      const ttlHours = ttl ? Number(ttl) : 24;
+      if (!Number.isFinite(ttlHours) || ttlHours <= 0) throw new Error("ttlHours must be a positive number.");
+      const { num, den } = rateToRaw(minPrice, inInfo.decimals, outInfo.decimals);
+      const receipt = await setTradeRule(ctx, {
+        inType,
+        outType,
+        maxPerTrade: parseUnits(maxTrade, inInfo.decimals),
+        maxPerEpoch: parseUnits(maxEpoch, inInfo.decimals),
+        rateNum: num,
+        rateDen: den,
+        ttlMs: ttlHours * 3_600_000,
+      });
+      printReceipt(
+        `Standing rule: the agent may sell up to ${maxTrade} ${inInfo.symbol} per trade and ${maxEpoch} ${inInfo.symbol} per epoch for ${outInfo.symbol}, never below ${minPrice} ${outInfo.symbol} per ${inInfo.symbol}.`,
+        receipt,
+      );
+      console.log(`Expires: ${new Date(receipt.expiryMs).toISOString()}`);
+      console.log(`The price floor is your number. The contract has no price oracle, so keep it near the market and keep the limits small.`);
+      return;
+    }
+    case "remove-trade-rule": {
+      const [sell, buy] = args;
+      if (!sell || !buy) throw new Error(USAGE);
+      printReceipt(`Removed the ${sell} -> ${buy} rule.`, await removeTradeRule(ctx, resolveCoinType(sell), resolveCoinType(buy)));
       return;
     }
     case "allow-validator":

@@ -16,12 +16,42 @@ import { proposalsDir } from "../config.js";
  */
 export type ProposalStatus = "pending" | "approved" | "rejected" | "expired" | "executed" | "failed";
 
-export interface Proposal {
+interface ProposalBase {
   id: string;
   status: ProposalStatus;
   createdAtMs: number;
   /** After this the owner can no longer approve. */
   approvalDeadlineMs: number;
+  /** How long the on-chain intent stays valid once approved. */
+  intentTtlMs: number;
+  /** The on-chain intent the owner's approval created (swap Intent or SpendIntent). */
+  intentId?: string;
+  intentExpiryMs?: number;
+  approvalDigest?: string;
+  error?: string;
+}
+
+/**
+ * A one-off payment outside the spending policy (over the limit or cap, or to a recipient
+ * the owner has not allowed). Approving signs create_spend_intent for exactly this payment.
+ */
+export interface SpendProposal extends ProposalBase {
+  kind: "spend";
+  recipient: string;
+  /** Raw MIST, as a decimal string. */
+  amountMist: string;
+  /** Why this could not be paid directly. */
+  reason: string;
+  spendDigest?: string;
+}
+
+/** A swap. Needs the owner's approval, unless a standing trade rule covers it (`auto`). */
+export interface SwapProposal extends ProposalBase {
+  kind?: "swap";
+  /** Covered by a standing trade rule: no owner approval, no on-chain intent. */
+  auto?: boolean;
+  /** Why a standing rule did not cover this trade, so it needs approval instead. */
+  ruleNote?: string;
   dex: string;
   inType: string;
   outType: string;
@@ -34,15 +64,22 @@ export interface Proposal {
   quotedOut: string;
   minOut: string;
   slippageBps: number;
-  /** How long the on-chain intent stays valid once approved. */
-  intentTtlMs: number;
-  intentId?: string;
-  intentExpiryMs?: number;
-  approvalDigest?: string;
   swapDigest?: string;
   amountOut?: string;
-  error?: string;
 }
+
+export type Proposal = SwapProposal | SpendProposal;
+
+export function isSpendProposal(p: Proposal): p is SpendProposal {
+  return p.kind === "spend";
+}
+
+export function isSwapProposal(p: Proposal): p is SwapProposal {
+  return p.kind !== "spend";
+}
+
+/** Fields `updateProposal` may change. */
+export type ProposalPatch = Partial<Omit<SwapProposal, "kind"> & Omit<SpendProposal, "kind">>;
 
 /** How long the owner has to approve a proposal. */
 export const APPROVAL_WINDOW_MS = 10 * 60 * 1000;
@@ -79,12 +116,34 @@ async function write(proposal: Proposal): Promise<void> {
   await rename(temp, target);
 }
 
+/**
+ * Records a swap. A swap flagged `auto` is covered by a standing trade rule: it starts
+ * approved (no owner step) and the contract re-checks the rule when it runs.
+ */
 export async function createProposal(
-  fields: Omit<Proposal, "id" | "status" | "createdAtMs" | "approvalDeadlineMs" | "intentTtlMs">,
-): Promise<Proposal> {
+  fields: Omit<SwapProposal, "id" | "kind" | "status" | "createdAtMs" | "approvalDeadlineMs" | "intentTtlMs">,
+): Promise<SwapProposal> {
   const now = Date.now();
-  const proposal: Proposal = {
+  const proposal: SwapProposal = {
     ...fields,
+    id: `prop_${randomBytes(5).toString("hex")}`,
+    status: fields.auto ? "approved" : "pending",
+    createdAtMs: now,
+    approvalDeadlineMs: now + APPROVAL_WINDOW_MS,
+    intentTtlMs: INTENT_TTL_MS,
+    ...(fields.auto ? { intentExpiryMs: now + INTENT_TTL_MS } : {}),
+  };
+  await write(proposal);
+  return proposal;
+}
+
+export async function createSpendProposal(
+  fields: Pick<SpendProposal, "recipient" | "amountMist" | "reason">,
+): Promise<SpendProposal> {
+  const now = Date.now();
+  const proposal: SpendProposal = {
+    ...fields,
+    kind: "spend",
     id: `prop_${randomBytes(5).toString("hex")}`,
     status: "pending",
     createdAtMs: now,
@@ -130,9 +189,9 @@ export async function listProposals(limit = 20): Promise<Proposal[]> {
     .slice(0, limit);
 }
 
-export async function updateProposal(id: string, patch: Partial<Proposal>): Promise<Proposal> {
+export async function updateProposal(id: string, patch: ProposalPatch): Promise<Proposal> {
   const current = await requireProposal(id);
-  const next: Proposal = { ...current, ...patch, id: current.id };
+  const next = { ...current, ...patch, id: current.id, kind: current.kind } as Proposal;
   await write(next);
   return next;
 }
@@ -145,6 +204,19 @@ function fmt(raw: string, decimals: number, symbol: string): string {
 }
 
 export function describeProposal(p: Proposal): string {
+  if (isSpendProposal(p)) {
+    const lines = [
+      `Proposal ID: ${p.id}`,
+      `Status: ${p.status}`,
+      `Pay: ${fmt(p.amountMist, 9, "SUI")} to ${p.recipient}`,
+      `Why approval is needed: ${p.reason}`,
+    ];
+    if (p.status === "pending") lines.push(`Approval window closes: ${new Date(p.approvalDeadlineMs).toISOString()}`);
+    if (p.intentId) lines.push(`On-chain approval: ${p.intentId}`);
+    if (p.spendDigest) lines.push(`Payment digest: ${p.spendDigest}`);
+    if (p.error) lines.push(`Error: ${p.error}`);
+    return lines.join("\n");
+  }
   const lines = [
     `Proposal ID: ${p.id}`,
     `Status: ${p.status}`,
@@ -152,6 +224,8 @@ export function describeProposal(p: Proposal): string {
     `Receive: at least ${fmt(p.minOut, p.outDecimals, p.outSymbol)} (quoted ${fmt(p.quotedOut, p.outDecimals, p.outSymbol)}, ${p.slippageBps / 100}% slippage allowed)`,
     `Venue: ${p.dex}`,
   ];
+  if (p.auto) lines.push(`Covered by a standing trade rule: no owner approval needed. Run it with vault_swap.`);
+  if (p.ruleNote) lines.push(`Standing rule not used: ${p.ruleNote}`);
   if (p.status === "pending") {
     lines.push(`Approval window closes: ${new Date(p.approvalDeadlineMs).toISOString()}`);
   }

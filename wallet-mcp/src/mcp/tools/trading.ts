@@ -1,7 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { createSuiClient } from "../../blockchain/client.js";
-import { formatAmount } from "../../blockchain/coins.js";
+import { formatAmount, parseUnits } from "../../blockchain/coins.js";
+import { executeSpendProposal, proposeSpend } from "../../blockchain/payments.js";
 import { describeProposal, getProposal, isProposalId, listProposals } from "../../blockchain/proposals.js";
 import {
   dryRunSwap,
@@ -60,6 +61,7 @@ export function registerTrading(server: McpServer): void {
       description:
         "Propose a swap for the vault owner to approve. THIS DOES NOT TRADE. It quotes the swap, records the exact terms, and shows the owner an approval card in the app. " +
         "Only the owner can approve (by signing on-chain); you cannot. After calling this, tell the owner the proposal is waiting for their approval and STOP. " +
+        "Exception: if the owner has set a standing trade rule that covers this swap (vault_status lists the rules), the result says so and no approval is needed: call vault_swap with the proposalId. " +
         "Only call vault_swap after the owner tells you they approved it. The swap sells only funds the owner put in the trading sleeve (see vault_status). " +
         `Slippage is how much worse than the quote the owner will accept, in basis points (default 100 = 1%, max ${MAX_SLIPPAGE_BPS}). The terms come from the live quote, not from you.`,
       inputSchema: z.object({
@@ -77,6 +79,13 @@ export function registerTrading(server: McpServer): void {
       try {
         const client = createSuiClient(resolveNetwork());
         const proposal = await proposeTrade(client, { sell, buy, amount, slippageBps });
+        if (proposal.auto) {
+          return text(
+            `${describeProposal(proposal)}\n\n` +
+              `Nothing has been traded yet, but the owner's standing trade rule already covers this swap, so no approval is needed. ` +
+              `Call vault_swap with this proposalId to run it. The contract re-checks the rule and rejects the swap if it is outside it.`,
+          );
+        }
         return text(
           `${describeProposal(proposal)}\n\n` +
             `Nothing has been traded. The owner must approve this proposal in the app (an approval card is shown). ` +
@@ -89,10 +98,71 @@ export function registerTrading(server: McpServer): void {
   );
 
   server.registerTool(
+    "propose_spend",
+    {
+      description:
+        "Ask the vault owner to approve a payment that the spending policy does not allow directly: over the per-spend limit, over this epoch's spending cap, or to a recipient not on the allowlist. " +
+        "THIS DOES NOT PAY. It records the exact recipient and amount and shows the owner an approval card; only the owner can approve (by signing on-chain). " +
+        "After calling this, tell the owner it is waiting for their approval and STOP. Only call vault_spend_approved after the owner says they approved it. " +
+        "If vault_spend would work (the payment is within the policy), use that instead; this tool refuses payments that need no approval.",
+      inputSchema: z.object({
+        recipient: z.string().describe("Sui address (0x...) to pay."),
+        amount: z.string().describe('Amount of SUI as a decimal string, e.g. "2.5".'),
+      }),
+    },
+    async ({ recipient, amount }) => {
+      try {
+        const network = resolveNetwork();
+        const client = createSuiClient(network);
+        const proposal = await proposeSpend({ client, network, recipient, amountMist: parseUnits(amount, 9) });
+        return text(
+          `${describeProposal(proposal)}\n\n` +
+            `Nothing has been paid. The owner must approve this in the app (an approval card is shown). ` +
+            `Wait for them to say they approved it before calling vault_spend_approved.`,
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "vault_spend_approved",
+    {
+      description:
+        "Execute a payment the owner approved. Pass the proposalId of an approved spend proposal. " +
+        "The contract only pays the exact recipient and amount the owner approved on-chain, exactly once, before the approval expires. " +
+        "If the proposal is still pending, do not call this: wait for the owner. Set dryRun to true to simulate without sending.",
+      inputSchema: z.object({
+        proposalId: z.string().describe("ID of an approved spend proposal, like prop_1a2b3c4d5e."),
+        dryRun: z.boolean().optional().describe("If true, simulate only. Nothing is signed or submitted."),
+      }),
+    },
+    async ({ proposalId, dryRun }) => {
+      try {
+        if (!isProposalId(proposalId)) throw new Error(`"${proposalId}" is not a proposal ID.`);
+        const network = resolveNetwork();
+        const wallet = await requireWallet(network);
+        const client = createSuiClient(network);
+        const { text: body } = await executeSpendProposal({
+          client,
+          network,
+          signer: wallet.keypair,
+          proposalId,
+          dryRun,
+        });
+        return text(body);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "get_proposal",
     {
       description:
-        "Check the status of a trade proposal (pending, approved, executed, rejected, expired) or list recent proposals if no ID is given.",
+        "Check the status of a trade or payment proposal (pending, approved, executed, rejected, expired) or list recent proposals if no ID is given.",
       inputSchema: z.object({
         proposalId: z.string().optional().describe("Proposal ID like prop_1a2b3c4d5e. Omit to list recent ones."),
       }),
@@ -117,21 +187,24 @@ export function registerTrading(server: McpServer): void {
     "vault_intents",
     {
       description:
-        "List the trades the owner has approved on-chain that have not run yet. The agent can only ever execute these.",
+        "List what the owner has approved on-chain that has not run yet: single trades, and one-off payments. Standing trade rules are listed by vault_status.",
       inputSchema: z.object({}),
     },
     async () => {
       try {
         const status = await getVaultStatus(createSuiClient(resolveNetwork()));
-        if (status.intents.length === 0) return text("No approved trades are waiting.");
-        return text(
-          status.intents
-            .map(
-              (i) =>
-                `${i.intentId}: sell ${formatAmount(i.amountIn, { decimals: i.inDecimals, symbol: i.inSymbol })} for at least ${formatAmount(i.minOut, { decimals: i.outDecimals, symbol: i.outSymbol })}, approval expires ${new Date(i.expiryMs).toISOString()}`,
-            )
-            .join("\n"),
-        );
+        const lines = [
+          ...status.intents.map(
+            (i) =>
+              `Trade ${i.intentId}: sell ${formatAmount(i.amountIn, { decimals: i.inDecimals, symbol: i.inSymbol })} for at least ${formatAmount(i.minOut, { decimals: i.outDecimals, symbol: i.outSymbol })}, approval expires ${new Date(i.expiryMs).toISOString()}`,
+          ),
+          ...status.spendIntents.map(
+            (i) =>
+              `Payment ${i.intentId}: ${formatAmount(i.amountMist, { decimals: 9, symbol: "SUI" })} to ${i.recipient}, approval expires ${new Date(i.expiryMs).toISOString()}`,
+          ),
+        ];
+        if (lines.length === 0) return text("No approved trades or payments are waiting.");
+        return text(lines.join("\n"));
       } catch (error) {
         return errorResult(error);
       }
@@ -142,7 +215,7 @@ export function registerTrading(server: McpServer): void {
     "vault_swap",
     {
       description:
-        "Execute a trade the owner has approved. Pass the proposalId of an approved proposal (or an intentId from vault_intents). " +
+        "Execute a trade the owner has approved, or one a standing trade rule covers. Pass the proposalId of an approved proposal (or an intentId from vault_intents). " +
         "The contract only allows it if the owner approved it on-chain, exactly once, before it expires, at no worse than the approved minimum; otherwise it is rejected. " +
         "The proceeds go back into the vault, not the agent wallet. If the proposal is still pending, do not call this: wait for the owner. Set dryRun to true to simulate without sending.",
       inputSchema: z.object({
