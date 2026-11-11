@@ -6,15 +6,14 @@ import {
   dryRunVaultSpend,
   dryRunVaultStake,
   formatVaultDryRun,
-  formatVaultSpendReceipt,
   formatVaultStakeDryRun,
-  formatVaultStakeReceipt,
   formatVaultStatus,
   getVaultStatus,
-  vaultSpend,
-  vaultStake,
+  prepareVaultSpend,
+  prepareVaultStake,
 } from "../../blockchain/vault.js";
-import { requireWallet } from "../../blockchain/wallet.js";
+import { configuredAddress } from "../../blockchain/address.js";
+import { unsignedTransactionResult } from "./approvedTransaction.js";
 import { resolveNetwork } from "../../config.js";
 
 function errorResult(error: unknown) {
@@ -46,7 +45,7 @@ export function registerVault(server: McpServer): void {
     "vault_spend",
     {
       description:
-        "Pay a recipient in testnet SUI from the spending vault. The on-chain contract enforces the vault's rules: a per-spend limit, the vault's balance, an owner pause switch, and owner revocation. The request is rejected on-chain if any rule fails. Amount is a decimal string in SUI, such as \"0.01\". Set dryRun to true to simulate without sending. A real spend is irreversible.",
+        "Prepare an unsigned testnet SUI payment from the spending vault. The on-chain contract enforces the vault's rules: a per-spend limit, the vault's balance, an owner pause switch, and owner revocation. The request is rejected on-chain if any rule fails. Amount is a decimal string in SUI, such as \"0.01\". Set dryRun to true to simulate. Execution requires an approved proposal.",
       inputSchema: z.object({
         to: z.string().describe("Recipient Sui address (0x...)."),
         amount: z.string().describe('Amount of SUI to pay, as a decimal string such as "0.01".'),
@@ -65,15 +64,15 @@ export function registerVault(server: McpServer): void {
         } catch {
           throw new Error(`Amount must be a positive SUI decimal string, for example "0.01". Got "${amount}".`);
         }
-        const wallet = await requireWallet(network);
+        const sender = configuredAddress(network);
         const client = createSuiClient(network);
-        const input = { client, network, signer: wallet.keypair, recipient: to, amountMist };
+        const input = { client, network, sender, recipient: to, amountMist };
         if (dryRun) {
           const result = await dryRunVaultSpend(input);
           return { content: [{ type: "text", text: formatVaultDryRun(result) }] };
         }
-        const receipt = await vaultSpend(input);
-        return { content: [{ type: "text", text: formatVaultSpendReceipt(receipt) }] };
+        const { tx } = await prepareVaultSpend(input);
+        return await unsignedTransactionResult(client, tx);
       } catch (error) {
         return errorResult(error);
       }
@@ -84,7 +83,7 @@ export function registerVault(server: McpServer): void {
     "vault_stake",
     {
       description:
-        "Stake testnet SUI from the spending vault with a validator to earn staking rewards. The validator must be on the vault's allowlist (see vault_status); only the vault owner can add validators. Minimum 1 SUI per stake. The staking receipt stays inside the vault, so only the owner can unstake: this tool cannot withdraw a stake. The per-spend limit does not apply to staking. Amount is a decimal string in SUI, such as \"1\". Set dryRun to true to simulate without sending. A real stake takes effect next epoch.",
+        "Prepare an unsigned testnet SUI stake from the spending vault. The validator must be on the vault's allowlist (see vault_status); only the vault owner can add validators. Minimum 1 SUI per stake. The staking receipt stays inside the vault, so only the owner can unstake: this tool cannot withdraw a stake. The per-spend limit does not apply to staking. Amount is a decimal string in SUI, such as \"1\". Set dryRun to true to simulate. Execution requires an approved proposal.",
       inputSchema: z.object({
         validator: z.string().describe("Validator Sui address (0x...). Must be on the vault's allowlist."),
         amount: z.string().describe('Amount of SUI to stake, as a decimal string such as "1".'),
@@ -103,15 +102,15 @@ export function registerVault(server: McpServer): void {
         } catch {
           throw new Error(`Amount must be a positive SUI decimal string, for example "1". Got "${amount}".`);
         }
-        const wallet = await requireWallet(network);
+        const sender = configuredAddress(network);
         const client = createSuiClient(network);
-        const input = { client, network, signer: wallet.keypair, validator, amountMist };
+        const input = { client, network, sender, validator, amountMist };
         if (dryRun) {
           const result = await dryRunVaultStake(input);
           return { content: [{ type: "text", text: formatVaultStakeDryRun(result) }] };
         }
-        const receipt = await vaultStake(input);
-        return { content: [{ type: "text", text: formatVaultStakeReceipt(receipt) }] };
+        const { tx } = await prepareVaultStake(input);
+        return await unsignedTransactionResult(client, tx);
       } catch (error) {
         return errorResult(error);
       }

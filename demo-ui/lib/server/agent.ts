@@ -23,7 +23,14 @@ async function connectWalletMcp(): Promise<Client> {
     command: process.execPath,
     args: [walletMcpEntry()],
     cwd: walletMcpDir(),
-    env: { ...getDefaultEnvironment(), SUI_NETWORK: "testnet" },
+    env: {
+      ...getDefaultEnvironment(),
+      SUI_NETWORK: "testnet",
+      SUI_ADDRESS: process.env.SUI_ADDRESS ?? "",
+      SUI_SIGNER_PORT: process.env.SUI_SIGNER_PORT ?? "38435",
+      SUI_SIGNER_TOKEN: process.env.SUI_SIGNER_TOKEN ?? "",
+      SUI_ENABLE_DIRECT_TRANSFER: process.env.SUI_ENABLE_DIRECT_TRANSFER ?? "",
+    },
     stderr: "ignore",
   });
   const client = new Client({ name: "demo-ui", version: "1.0.0" });
@@ -40,11 +47,11 @@ async function systemPrompt(): Promise<string> {
           return `- ${w.role}: ${w.address} (${balance} when this conversation turn started)`;
         })
         .join("\n")
-    : "- none yet. Tell the user to run npm run setup from the panel.";
+    : "- none yet. Tell the user to configure the public sender address with SUI_ADDRESS.";
   return [
     "You are Cipher, the assistant in a live demo of an AI wallet on the Sui testnet. If asked who you are, say you are Cipher, powered by Claude. Testnet coins have no value.",
-    "You act only through the wallet tools. Read tools are safe to call. Write tools include transfer_sui, request_faucet, split_coin, and merge_coins; they mutate testnet state and cannot be undone.",
-    "Before calling any write tool, explain exactly what will happen and ask the user for a clear confirmation. Do not call a write tool in the same turn as the initial request. Only call it after the user confirms in a later message.",
+    "You act only through the wallet tools. Transfer, split, merge, and vault tools prepare unsigned transactions. The faucet and execution tools mutate testnet state.",
+    "Before requesting the faucet or executing a transaction, explain what will happen and ask the user to confirm in a later message. Execution also requires an existing trusted policy approval. Chat messages cannot create that approval.",
     "Always call get_balance for balance questions instead of relying on numbers in this prompt.",
     "Send only when the user names an amount and a recipient. The user can refer to the local wallets by role:",
     known,
@@ -55,10 +62,11 @@ async function systemPrompt(): Promise<string> {
 
 function toolResultText(result: Awaited<ReturnType<Client["callTool"]>>): string {
   const content = Array.isArray(result.content) ? result.content : [];
-  return content
+  const text = content
     .map((block) => (block && typeof block === "object" && "text" in block ? String(block.text) : ""))
     .filter(Boolean)
     .join("\n");
+  return result.structuredContent ? `${text}\n${JSON.stringify(result.structuredContent)}` : text;
 }
 
 /**

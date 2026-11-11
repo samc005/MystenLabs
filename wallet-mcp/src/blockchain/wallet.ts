@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { assertTestnet, walletPath, type WalletRole } from "../config.js";
 import type { SuiNetwork } from "./client.js";
 
@@ -111,12 +111,4 @@ export async function loadOrCreateWallet(
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600 });
   return { keypair, address: stored.address, filePath, created: true };
-}
-
-export function requireAddress(value: string): string {
-  const normalized = normalizeSuiAddress(value);
-  if (!isValidSuiAddress(normalized)) {
-    throw new Error(`Not a valid Sui address: ${value}`);
-  }
-  return normalized;
 }

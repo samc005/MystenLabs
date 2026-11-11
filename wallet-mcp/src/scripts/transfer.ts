@@ -33,7 +33,7 @@ async function main() {
     amountMist,
   };
   if (dryRun) {
-    console.log(formatDryRun(await dryRunTransferSui(input)));
+    console.log(formatDryRun(await dryRunTransferSui({ ...input, sender: wallet.address })));
     return;
   }
   console.log(formatTransferReceipt(await transferSui(input)));

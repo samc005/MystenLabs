@@ -55,7 +55,7 @@ export function WalletPanel({ wallets, status, loading, onRefresh }: Props) {
       </p>
 
       {wallets.length === 0 && !loading && (
-        <p className="empty">No wallets yet. Run npm run setup below to create and fund the sender.</p>
+        <p className="empty">Set SUI_ADDRESS to the public testnet sender address.</p>
       )}
 
       {wallets.map((wallet) => {

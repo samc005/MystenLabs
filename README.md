@@ -13,4 +13,4 @@ The design, security plan, stage-by-stage boundaries, and roadmap are in [docs/D
 
 ## Where the work is
 
-The chain path is proven: faucet, balance, and a 0.01 SUI transfer on testnet. Signing still happens inside `wallet-mcp`. A model has not called the tools yet. That connection is the current phase. Policy, the isolated signer, simulation summaries, the vault, and passkeys are specified in the design doc and are not built.
+The wallet MCP prepares testnet transactions and submits them after the isolated signer approves the exact bytes. End-to-end execution through Cipher requires a trusted policy and proposal service to publish approvals. See the [signer setup](wallet-mcp/README.md#isolated-signer).

@@ -10,6 +10,7 @@ import { registerListTransactions } from "./listTransactions.js";
 import { registerTransfer } from "./transfer.js";
 import { registerExtendedReadOnlyTools } from "./extendedReadOnly.js";
 import { registerWriteTools } from "./writeTools.js";
+import { registerApprovedTransaction } from "./approvedTransaction.js";
 import { registerVault } from "./vault.js";
 
 export function registerTools(server: McpServer): void {
@@ -24,6 +25,7 @@ export function registerTools(server: McpServer): void {
   registerExtendedReadOnlyTools(server);
   registerWriteTools(server);
   registerVault(server);
+  registerApprovedTransaction(server);
   // Direct transfers spend from the agent's own wallet and bypass every vault rule
   // (limit, pause, revoke). Off by default; the agent should spend through the vault.
   if (process.env.SUI_ENABLE_DIRECT_TRANSFER === "true") {

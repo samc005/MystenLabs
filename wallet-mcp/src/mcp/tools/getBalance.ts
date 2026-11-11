@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { formatBalanceReport, getAllBalances } from "../../blockchain/balance.js";
 import { createSuiClient } from "../../blockchain/client.js";
-import { requireAddress, requireWallet } from "../../blockchain/wallet.js";
+import { requireAddress, configuredAddress } from "../../blockchain/address.js";
 import { resolveNetwork } from "../../config.js";
 
 export function registerGetBalance(server: McpServer): void {
@@ -21,7 +21,7 @@ export function registerGetBalance(server: McpServer): void {
     async ({ address }) => {
       try {
         const network = resolveNetwork();
-        const owner = address ? requireAddress(address) : (await requireWallet(network)).address;
+        const owner = address ? requireAddress(address) : configuredAddress(network);
         const client = createSuiClient(network);
         const balances = await getAllBalances(client, owner);
         return { content: [{ type: "text", text: formatBalanceReport(network, owner, balances) }] };

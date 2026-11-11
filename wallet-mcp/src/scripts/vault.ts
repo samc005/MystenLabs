@@ -43,7 +43,7 @@ async function main() {
       amountMist: parseToMist(amount),
     };
     if (dryRun) {
-      console.log(formatVaultDryRun(await dryRunVaultSpend(input)));
+      console.log(formatVaultDryRun(await dryRunVaultSpend({ ...input, sender: wallet.address })));
     } else {
       console.log(formatVaultSpendReceipt(await vaultSpend(input)));
     }
@@ -63,7 +63,7 @@ async function main() {
       amountMist: parseToMist(amount),
     };
     if (dryRun) {
-      console.log(formatVaultStakeDryRun(await dryRunVaultStake(input)));
+      console.log(formatVaultStakeDryRun(await dryRunVaultStake({ ...input, sender: wallet.address })));
     } else {
       console.log(formatVaultStakeReceipt(await vaultStake(input)));
     }

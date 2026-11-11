@@ -34,8 +34,9 @@ async function readCliActiveAddress(): Promise<string | undefined> {
 
 async function main() {
   const { address: argAddress, network } = parseArgs(process.argv.slice(2));
-  const localWallet = network === "testnet" ? await loadWallet(network) : undefined;
-  const address = argAddress ?? process.env.SUI_ADDRESS ?? localWallet?.address ?? (await readCliActiveAddress());
+  const configured = argAddress ?? process.env.SUI_ADDRESS;
+  const localWallet = !configured && network === "testnet" ? await loadWallet(network) : undefined;
+  const address = configured ?? localWallet?.address ?? (await readCliActiveAddress());
   if (!address) {
     throw new Error("No address given. Pass one, set SUI_ADDRESS, or run npm run setup.");
   }

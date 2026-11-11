@@ -6,7 +6,7 @@ import { assertTestnet, explorerTxUrl } from "../config.js";
 import { formatUnits, getBalance } from "./balance.js";
 import type { SuiNetwork } from "./client.js";
 import type { TransferReceipt } from "./types.js";
-import { requireAddress } from "./wallet.js";
+import { requireAddress } from "./address.js";
 
 export function netGasMist(gas: {
   computationCost: string;
@@ -19,19 +19,19 @@ export function netGasMist(gas: {
 type TransferInput = {
   client: SuiGrpcClient;
   network: SuiNetwork;
-  signer: Ed25519Keypair;
+  sender: string;
   recipient: string;
   amountMist: bigint;
 };
 
 /** Validates the request and builds the (unsigned) transfer transaction. */
-async function prepareTransfer(input: TransferInput) {
+export async function prepareTransfer(input: TransferInput) {
   assertTestnet(input.network);
   if (input.amountMist <= 0n) {
     throw new Error("Amount must be greater than 0.");
   }
 
-  const sender = input.signer.toSuiAddress();
+  const sender = requireAddress(input.sender);
   const recipient = requireAddress(input.recipient);
   if (recipient === sender) {
     throw new Error("Recipient is the sender. Choose a different address.");
@@ -124,8 +124,8 @@ export function formatDryRun(result: DryRunResult): string {
  * Sends SUI from `signer` to `recipient`, drawing from the address balance
  * (and falling back to coin objects) via coinWithBalance.
  */
-export async function transferSui(input: TransferInput): Promise<TransferReceipt> {
-  const { tx, sender, recipient } = await prepareTransfer(input);
+export async function transferSui(input: Omit<TransferInput, "sender"> & { signer: Ed25519Keypair }): Promise<TransferReceipt> {
+  const { tx, sender, recipient } = await prepareTransfer({ ...input, sender: input.signer.toSuiAddress() });
 
   const submitted = await input.client.signAndExecuteTransaction({
     transaction: tx,
