@@ -335,3 +335,7 @@ Execution fails closed until a trusted producer publishes an approval.
 `npm test` exercises the contract through a local signer with a fixture key.
 
 Swap MCP tools never load a private key: vault_swap prepares unsigned bytes (or simulates). On-chain owner approval and the signer’s separate byte-bound policy approval are both required. Preparation does not mark a proposal executed; confirm the execution digest and on-chain intent state before retrying.
+
+### Signer environment file
+
+Copy .env.signer.example to .env.signer and fill in the existing agent wallet path (or signer-only secret key), private state directory, and bearer token. npm run signer loads .env.signer explicitly. The UI backend uses a matching token/state directory in demo-ui/.env.local; it needs only the public SUI_ADDRESS, never the signer private key. Real environment files and state are gitignored; templates contain no secrets.

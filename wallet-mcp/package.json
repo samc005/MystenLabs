@@ -5,7 +5,7 @@
   "main": "build/index.js",
   "scripts": {
     "build": "tsc",
-    "signer": "node build/signer/main.js",
+    "signer": "node --env-file=.env.signer build/signer/main.js",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "web": "tsx src/web.ts",

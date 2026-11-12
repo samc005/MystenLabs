@@ -14,7 +14,9 @@ Use the feature branch until #46 is merged. Node 22+ is required. Build the MCP 
 
 The existing agent wallet must own the configured AgentCap and have testnet SUI for gas. The vault needs a funded main balance. Match SUI_VAULT_PACKAGE_ID, SUI_VAULT_ID, and SUI_VAULT_AGENT_CAP_ID to a deployed contract with the required functions. Do not create a new unrelated wallet for an existing capability.
 
-Configure the signer terminal with SUI_NETWORK=testnet, an absolute private SUI_WALLET_FILE (or SUI_SECRET_KEY), a private absolute SUI_SIGNER_STATE_DIR, and SUI_SIGNER_TOKEN. Generate a fresh token once with openssl rand -hex 32; never show it on a shared screen. The UI backend needs the same state directory and token, SUI_ADDRESS matching the signer, public vault/pool overrides, and ANTHROPIC_API_KEY for natural language. Set these in demo-ui/.env.local; only the signer terminal needs the private wallet key. Configure WALLET_CONTACTS_JSON with actual full addresses for Alice/Bob.
+The local environment files are demo-ui/.env.local and wallet-mcp/.env.signer. Their committed templates are demo-ui/.env.example and wallet-mcp/.env.signer.example. Copy the templates when setting up another checkout, generate a fresh matching signer token for both files, and use the same absolute private signer-state directory in both. Never commit populated environment files.
+
+Set ANTHROPIC_API_KEY and SUI_ADDRESS in demo-ui/.env.local. Set SUI_WALLET_FILE to the absolute path of the existing agent wallet in wallet-mcp/.env.signer (private file mode 0600); alternatively set SUI_SECRET_KEY only there. npm run signer explicitly loads .env.signer; Next loads .env.local. Shell environment variables take precedence, so remove stale exported values when changing files. Configure public vault/pool overrides to match the deployment, and WALLET_CONTACTS_JSON with real full addresses for Alice/Bob. Leave optional overrides commented rather than blank.
 
 This demo's backend and signer need trusted access to the same private state directory. This is a localhost prototype, not a deployment with separate OS-user isolation. See authenticated-workflow.md for details.
 

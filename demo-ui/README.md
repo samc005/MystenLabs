@@ -67,3 +67,5 @@ How it works:
 ## Authenticated wallet workflow
 
 See [setup, supported intents, trust boundaries, and verification](../docs/authenticated-workflow.md). The chat authenticates requests with passkeys and asks for separate confirmation before signing server-prepared transactions. Run npm test for policy and authorization regression tests.
+
+Local configuration goes in .env.local; copy .env.example for a new checkout. The signer has its own wallet-mcp/.env.signer, loaded by its npm run signer script. Never place the signer private key in the UI environment.
