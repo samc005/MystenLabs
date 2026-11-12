@@ -5,6 +5,8 @@
   "main": "build/index.js",
   "scripts": {
     "build": "tsc",
+    "signer": "node build/signer/main.js",
+    "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "web": "tsx src/web.ts",
     "start": "tsx src/index.ts",
@@ -12,6 +14,7 @@
     "balance": "tsx src/scripts/balance.ts",
     "transfer": "tsx src/scripts/transfer.ts",
     "vault": "tsx src/scripts/vault.ts",
+    "owner": "tsx src/scripts/owner.ts",
     "boundaries": "tsx src/scripts/boundaries.ts",
     "demo": "tsx src/scripts/demo.ts"
   },

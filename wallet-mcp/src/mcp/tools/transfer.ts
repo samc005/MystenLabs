@@ -2,8 +2,9 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { parseToMist } from "@mysten/sui/utils";
 import { z } from "zod";
 import { createSuiClient } from "../../blockchain/client.js";
-import { formatTransferReceipt, transferSui } from "../../blockchain/transfer.js";
-import { requireWallet } from "../../blockchain/wallet.js";
+import { prepareTransfer } from "../../blockchain/transfer.js";
+import { configuredAddress } from "../../blockchain/address.js";
+import { unsignedTransactionResult } from "./approvedTransaction.js";
 import { resolveNetwork } from "../../config.js";
 
 export function registerTransfer(server: McpServer): void {
@@ -11,7 +12,7 @@ export function registerTransfer(server: McpServer): void {
     "transfer_sui",
     {
       description:
-        "Send testnet SUI from the local wallet to a recipient address. Amount is a decimal string in SUI, such as \"0.01\". This submits a real testnet transaction and cannot be reversed. The secret key is never an argument; it stays in the local wallet file. Gas is paid automatically from the sender balance.",
+        "Prepare an unsigned testnet SUI transfer from the configured sender. An approved proposal is required to execute it.",
       inputSchema: z.object({
         to: z.string().describe("Recipient Sui address (0x...)."),
         amount: z.string().describe('Amount of SUI to send, as a decimal string such as "0.01".'),
@@ -26,16 +27,16 @@ export function registerTransfer(server: McpServer): void {
         } catch {
           throw new Error(`Amount must be a positive SUI decimal string, for example "0.01". Got "${amount}".`);
         }
-        const wallet = await requireWallet(network);
+        const sender = configuredAddress(network);
         const client = createSuiClient(network);
-        const receipt = await transferSui({
+        const { tx } = await prepareTransfer({
           client,
           network,
-          signer: wallet.keypair,
+          sender,
           recipient: to,
           amountMist,
         });
-        return { content: [{ type: "text", text: formatTransferReceipt(receipt) }] };
+        return await unsignedTransactionResult(client, tx);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return { content: [{ type: "text", text: message }], isError: true };

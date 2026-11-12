@@ -7,11 +7,16 @@
  *
  *   npm run boundaries
  *   npm run boundaries -- --expect-paused   (run while the owner has paused the vault)
+ *   npm run boundaries -- --live-intent     (also signs two cheap owner transactions: creates an
+ *                                            intent with an impossible price floor, then cancels it)
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { parseToMist, SUI_SYSTEM_STATE_OBJECT_ID } from "@mysten/sui/utils";
 import { createSuiClient } from "../blockchain/client.js";
-import { getVaultStatus } from "../blockchain/vault.js";
+import { cancelIntent, createIntent, loadOwnerContext } from "../blockchain/owner.js";
+import { getDex } from "../blockchain/dex.js";
+import { resolveCoinType } from "../blockchain/coins.js";
+import { getVaultStatus, ruleFloor, spendCapRemaining } from "../blockchain/vault.js";
 import { requireWallet } from "../blockchain/wallet.js";
 import { resolveNetwork, vaultConfig } from "../config.js";
 
@@ -23,6 +28,26 @@ const ABORT_NAMES: Record<string, string> = {
   "4": "ERevoked",
   "5": "EValidatorNotAllowed",
   "6": "EStakeNotFound",
+  "7": "EZeroAmount",
+  "8": "EIntentNotFound",
+  "9": "EIntentExpired",
+  "10": "EInsufficientTrading",
+  "11": "EBelowMinOut",
+  "12": "EBadExpiry",
+  "13": "EDailyCapExceeded",
+  "14": "ERecipientNotAllowed",
+  "15": "ESpendIntentNotFound",
+  "16": "ESpendIntentExpired",
+  "17": "EStakeCapExceeded",
+  "18": "EBelowReserve",
+  "19": "ETooManyPositions",
+  "20": "EPolicyNotSet",
+  "21": "ENoTradeRule",
+  "22": "ETradeRuleExpired",
+  "23": "ETradeTooLarge",
+  "24": "ETradeEpochCapExceeded",
+  "25": "ERateBelowFloor",
+  "26": "EBadRule",
 };
 
 /** An address that is not on the allowlist (Mysten-4 on testnet; any non-allowed address works). */
@@ -219,14 +244,302 @@ async function main() {
     "a leaked cap ID is useless without the agent's key",
   );
 
-  console.log("\n--- Known gap, expected to succeed today ---");
+  console.log("\n--- Swaps: the agent bypassing every client-side check ---");
+  const SUI = resolveCoinType("sui");
+  const USDC = resolveCoinType("usdc");
+  const swapPtb = (tx: Transaction, intentId: string) => {
+    const typeArguments = [SUI, USDC];
+    const [coinIn, ticket] = tx.moveCall({
+      target: target("begin_swap"),
+      typeArguments,
+      arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.id(intentId), tx.object.clock()],
+    });
+    const coinOut = getDex().addSwap(tx, coinIn!, SUI, USDC);
+    tx.moveCall({ target: target("finish_swap"), typeArguments, arguments: [ticket!, tx.object(config.vaultId), coinOut] });
+  };
   report(
-    "Spend 0.01 SUI to ANY address (no recipient allowlist yet)",
+    "Run a trade the owner never approved (made-up intent ID)",
     "contract",
-    await simulate(agent, (tx) => spendArgs(tx, "0x00000000000000000000000000000000000000000000000000000000000dead0", parseToMist("0.01"))),
-    "allowed",
-    "within the per-spend limit the agent can pay anyone, repeatedly: there is no daily cap or recipient allowlist",
+    await simulate(agent, (tx) => swapPtb(tx, "0x00000000000000000000000000000000000000000000000000000000000dead1")),
+    "rejected",
+    "with no on-chain intent the agent cannot take a single coin out of the trading sleeve",
   );
+  const swapOwnerOnly: Array<[string, (tx: Transaction) => void]> = [
+    [
+      "Approve its own trade: create_intent with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("create_intent"),
+          typeArguments: [SUI, USDC],
+          arguments: [
+            tx.object(config.agentCapId),
+            tx.object(config.vaultId),
+            tx.pure.u64(1),
+            tx.pure.u64(1),
+            tx.pure.u64(Date.now() + 600_000),
+            tx.object.clock(),
+          ],
+        }),
+    ],
+    [
+      "Move funds into the trading sleeve with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("allocate_sui_to_trading"),
+          arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.u64(1)],
+        }),
+    ],
+    [
+      "Withdraw from the trading sleeve with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("withdraw_trading"),
+          typeArguments: [SUI],
+          arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.u64(1)],
+        }),
+    ],
+  ];
+  for (const [name, build] of swapOwnerOnly) {
+    report(name, "Move type system", await simulate(agent, build), "rejected");
+  }
+
+  if (process.argv.includes("--live-intent")) {
+    console.log("\n--- Live: the owner's price floor (signs two small owner transactions) ---");
+    const ctx = await loadOwnerContext(client, network);
+    const created = await createIntent(ctx, { inType: SUI, outType: USDC, amountIn: parseToMist("0.01"), minOut: 1_000_000_000n, ttlMs: 120_000 });
+    console.log(`      created intent ${created.intentId} (sell 0.01 SUI, demand 1000 tUSDC: far above the pool's price)`);
+    try {
+      report(
+        "Execute an approved trade that returns less than the owner's minimum",
+        "contract",
+        await simulate(agent, (tx) => swapPtb(tx, created.intentId)),
+        "rejected",
+        "the intent is real and open, the pool swap works, but finish_swap refuses output below min_out",
+      );
+    } finally {
+      await cancelIntent(ctx, created.intentId);
+      console.log(`      cancelled intent ${created.intentId}`);
+    }
+  } else {
+    console.log("SKIP  owner price-floor check (run with --live-intent to include it)");
+  }
+
+  // --- Owner policies ---
+  // Which checks apply depends on what the owner has configured on this vault.
+  const STRANGER = "0x00000000000000000000000000000000000000000000000000000000000dead0";
+  const rule = status.tradeRules.find((r) => r.inType === SUI && r.outType === USDC);
+
+  console.log("\n--- Owner policies: the agent trying to change them ---");
+  const policyOwnerOnly: Array<[string, (tx: Transaction) => void]> = [
+    [
+      "Raise its own spending cap: set_spend_policy with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("set_spend_policy"),
+          arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.u64(parseToMist("1000")), tx.pure.bool(false)],
+        }),
+    ],
+    [
+      "Remove the spending policy: clear_spend_policy with the AgentCap",
+      (tx) => tx.moveCall({ target: target("clear_spend_policy"), arguments: [tx.object(config.agentCapId), tx.object(config.vaultId)] }),
+    ],
+    [
+      "Allowlist its own address: allow_recipient with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("allow_recipient"),
+          arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.address(agent)],
+        }),
+    ],
+    [
+      "Loosen the stake limits: set_stake_policy with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("set_stake_policy"),
+          arguments: [
+            tx.object(config.agentCapId),
+            tx.object(config.vaultId),
+            tx.pure.u64(parseToMist("1000")),
+            tx.pure.u64(0),
+            tx.pure.u64(1000),
+          ],
+        }),
+    ],
+    [
+      "Zero the stake counters: sync_stake_counters with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("sync_stake_counters"),
+          arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.u64(0), tx.pure.u64(0)],
+        }),
+    ],
+    [
+      "Approve its own payment: create_spend_intent with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("create_spend_intent"),
+          arguments: [
+            tx.object(config.agentCapId),
+            tx.object(config.vaultId),
+            tx.pure.address(STRANGER),
+            tx.pure.u64(parseToMist("0.01")),
+            tx.pure.u64(Date.now() + 600_000),
+            tx.object.clock(),
+          ],
+        }),
+    ],
+    [
+      "Write itself a standing trade rule: set_trade_rule with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("set_trade_rule"),
+          typeArguments: [SUI, USDC],
+          arguments: [
+            tx.object(config.agentCapId),
+            tx.object(config.vaultId),
+            tx.pure.u64(parseToMist("1000")),
+            tx.pure.u64(parseToMist("1000")),
+            tx.pure.u64(1),
+            tx.pure.u64(1_000_000_000),
+            tx.pure.u64(Date.now() + 3_600_000),
+            tx.object.clock(),
+          ],
+        }),
+    ],
+    [
+      "Remove the owner's trade rule: remove_trade_rule with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("remove_trade_rule"),
+          typeArguments: [SUI, USDC],
+          arguments: [tx.object(config.agentCapId), tx.object(config.vaultId)],
+        }),
+    ],
+  ];
+  for (const [name, build] of policyOwnerOnly) {
+    report(name, "Move type system", await simulate(agent, build), "rejected");
+  }
+
+  console.log("\n--- Owner policies: spending ---");
+  report(
+    "Execute a payment approval that does not exist (made-up ID)",
+    "contract",
+    await simulate(agent, (tx) =>
+      tx.moveCall({
+        target: target("spend_approved"),
+        arguments: [
+          tx.object(config.agentCapId),
+          tx.object(config.vaultId),
+          tx.pure.id("0x00000000000000000000000000000000000000000000000000000000000dead2"),
+          tx.object.clock(),
+        ],
+      }),
+    ),
+    "rejected",
+    "an approved payment is a real on-chain object created by the owner; without one the agent cannot use this path",
+  );
+  const spendPolicy = status.spendPolicy;
+  if (spendPolicy?.enforceRecipients) {
+    report(
+      "Spend 0.01 SUI to a stranger (not on the recipient allowlist)",
+      "contract",
+      await simulate(agent, (tx) => spendArgs(tx, STRANGER, parseToMist("0.01"))),
+      "rejected",
+      "within the per-spend limit, but the owner only allows listed recipients",
+    );
+    const listed = status.allowedRecipients[0];
+    if (listed && spendCapRemaining(status) !== null && (spendCapRemaining(status) ?? 0n) >= parseToMist("0.01")) {
+      report(
+        "Spend 0.01 SUI to an allowlisted recipient",
+        "contract",
+        await simulate(agent, (tx) => spendArgs(tx, listed, parseToMist("0.01"))),
+        "allowed",
+        "a normal payment inside the policy still works with no approval",
+      );
+    }
+  } else {
+    report(
+      "Spend 0.01 SUI to ANY address",
+      "contract",
+      await simulate(agent, (tx) => spendArgs(tx, STRANGER, parseToMist("0.01"))),
+      "allowed",
+      spendPolicy
+        ? "this vault has a spending cap but no recipient allowlist, so the agent can pay anyone up to the cap"
+        : "KNOWN GAP: this vault has no spending policy, so the agent can pay anyone, repeatedly, up to the per-spend limit",
+    );
+  }
+  if (spendPolicy && spendPolicy.dailyCapMist <= status.perTxLimitMist) {
+    report(
+      "Spend more than this epoch's cap remaining",
+      "contract",
+      await simulate(agent, (tx) => spendArgs(tx, status.allowedRecipients[0] ?? STRANGER, (spendCapRemaining(status) ?? 0n) + 1n)),
+      "rejected",
+    );
+  } else {
+    console.log("SKIP  epoch-cap check: the cap is above the per-spend limit, so one simulation cannot reach it (covered by the Move unit tests)");
+  }
+
+  console.log("\n--- Owner policies: standing trade rule (begin_swap_auto) ---");
+  const autoPtb = (tx: Transaction, amountIn: bigint, minOut: bigint, inType = SUI, outType = USDC) => {
+    const typeArguments = [inType, outType];
+    const [coinIn, ticket] = tx.moveCall({
+      target: target("begin_swap_auto"),
+      typeArguments,
+      arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.u64(amountIn), tx.pure.u64(minOut), tx.object.clock()],
+    });
+    const coinOut = getDex().addSwap(tx, coinIn!, inType, outType);
+    tx.moveCall({ target: target("finish_swap"), typeArguments, arguments: [ticket!, tx.object(config.vaultId), coinOut] });
+  };
+  report(
+    "Swap USDC to SUI with no approval and no rule for that direction",
+    "contract",
+    await simulate(agent, (tx) => autoPtb(tx, 1_000n, 1n, USDC, SUI)),
+    "rejected",
+    "a rule covers one direction of one pair; without a rule the agent needs a per-trade approval",
+  );
+  if (rule) {
+    const small = rule.maxPerTrade < parseToMist("0.01") ? rule.maxPerTrade : parseToMist("0.01");
+    report(
+      "Swap inside the standing rule (agent picks the amount, price above the floor)",
+      "contract",
+      await simulate(agent, (tx) => autoPtb(tx, small, ruleFloor(rule, small))),
+      "allowed",
+      `no per-trade approval needed: the owner's rule allows up to ${rule.maxPerTrade} raw per trade at a floor of ${rule.rateNum}/${rule.rateDen}`,
+    );
+    report(
+      "Swap under the rule but demanding almost nothing back (below the owner's price floor)",
+      "contract",
+      await simulate(agent, (tx) => autoPtb(tx, small, 1n)),
+      "rejected",
+      "the floor is the owner's number, so the agent cannot pick a terrible price",
+    );
+    report(
+      "Swap larger than the rule's per-trade maximum",
+      "contract",
+      await simulate(agent, (tx) => autoPtb(tx, rule.maxPerTrade + 1n, ruleFloor(rule, rule.maxPerTrade + 1n))),
+      "rejected",
+    );
+  } else {
+    report(
+      "Swap SUI to USDC with no approval and no standing rule",
+      "contract",
+      await simulate(agent, (tx) => autoPtb(tx, parseToMist("0.01"), 1n)),
+      "rejected",
+      "no rule is set on this vault, so every swap needs a per-trade approval",
+    );
+    console.log("SKIP  rule-limit checks: this vault has no SUI to tUSDC standing rule");
+  }
+
+  console.log("\n--- Owner policies: staking ---");
+  if (status.stakePolicy) {
+    const kp = status.stakePolicy;
+    console.log(
+      `      stake policy: max ${kp.maxStakedMist} MIST staked (${kp.stakedTotalMist} now), reserve ${kp.minReserveMist}, positions ${kp.positions}/${kp.maxPositions}`,
+    );
+    console.log("SKIP  stake-cap live checks: the vault's balance is below the 1 SUI minimum stake, so a simulation would fail on balance first (covered by the Move unit tests)");
+  } else {
+    console.log("NOTE  this vault has no stake policy: the agent can stake the whole balance in any number of positions");
+  }
 
   console.log(`\n${failures === 0 ? "All boundaries behaved as expected." : `${failures} check(s) did not behave as expected.`}`);
   process.exit(failures ? 1 : 0);

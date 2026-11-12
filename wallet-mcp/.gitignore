@@ -3,3 +3,4 @@ build/
 .wallet/
 .env
 .claude/settings.local.json
+.proposals/

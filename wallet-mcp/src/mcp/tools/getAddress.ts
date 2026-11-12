@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { requireWallet } from "../../blockchain/wallet.js";
+import { configuredAddress } from "../../blockchain/address.js";
 import { resolveNetwork } from "../../config.js";
 
 export function registerGetAddress(server: McpServer): void {
@@ -11,9 +11,9 @@ export function registerGetAddress(server: McpServer): void {
     async () => {
       try {
         const network = resolveNetwork();
-        const wallet = await requireWallet(network);
+        const address = configuredAddress(network);
         return {
-          content: [{ type: "text", text: `Network: ${network}\nAddress: ${wallet.address}` }],
+          content: [{ type: "text", text: `Network: ${network}\nAddress: ${address}` }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

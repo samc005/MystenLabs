@@ -1,9 +1,10 @@
 "use client";
 
 import type Anthropic from "@anthropic-ai/sdk";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { readNdjson } from "@/lib/ndjson";
 import type { ChatEvent } from "@/lib/server/agent";
+import { ProposalCard } from "./ProposalCard";
 
 type Item =
   | { kind: "user"; text: string }
@@ -13,9 +14,12 @@ type Item =
 
 const SUGGESTIONS = [
   "What's my balance?",
-  "Send 0.01 SUI to the receiver",
-  "How much does the receiver have now?",
+  "What's in the vault, and what can you trade?",
+  "Swap 0.05 SUI to tUSDC",
+  "Which validators could we stake with?",
 ];
+
+const PROPOSAL_ID = /Proposal ID: (prop_[0-9a-f]{10})/;
 
 interface Props {
   /** Called after every tool result, so the wallet panel can refresh. */
@@ -29,6 +33,21 @@ export function ChatPanel({ onToolResult }: Props) {
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // A message to send as soon as the current turn ends (e.g. "I approved it" clicked mid-reply).
+  const [queued, setQueued] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!busy && queued) {
+      const next = queued;
+      setQueued(null);
+      void send(next);
+    }
+  });
+
+  function followUp(text: string) {
+    if (busy) setQueued(text);
+    else void send(text);
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -133,16 +152,26 @@ export function ChatPanel({ onToolResult }: Props) {
           if (item.kind === "assistant") return <div key={i} className="bubble assistant">{item.text}</div>;
           if (item.kind === "error") return <div key={i} className="bubble error">{item.text}</div>;
           const pending = item.output === undefined;
+          const proposalId = (item.name === "propose_trade" || item.name === "propose_spend") && !item.isError ? item.output?.match(PROPOSAL_ID)?.[1] : undefined;
           return (
-            <div key={item.id} className={item.isError ? "tool-card error" : "tool-card"}>
-              <div className="tool-card-head">
-                <span className="tool-badge">MCP tool</span>
-                <code className="tool">{item.name}</code>
-                {pending && <span className="dot" aria-label="Running" />}
+            <Fragment key={item.id}>
+              <div className={item.isError ? "tool-card error" : "tool-card"}>
+                <div className="tool-card-head">
+                  <span className="tool-badge">MCP tool</span>
+                  <code className="tool">{item.name}</code>
+                  {pending && <span className="dot" aria-label="Running" />}
+                </div>
+                <pre className="args">{JSON.stringify(item.input)}</pre>
+                {!pending && <pre className="output">{item.output}</pre>}
               </div>
-              <pre className="args">{JSON.stringify(item.input)}</pre>
-              {!pending && <pre className="output">{item.output}</pre>}
-            </div>
+              {proposalId && (
+                <ProposalCard
+                  id={proposalId}
+                  onApproved={() => followUp(`I approved proposal ${proposalId}. Please run it now.`)}
+                  onRejected={() => followUp(`I rejected proposal ${proposalId}. Do not run it.`)}
+                />
+              )}
+            </Fragment>
           );
         })}
 
@@ -163,7 +192,7 @@ export function ChatPanel({ onToolResult }: Props) {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="e.g. Send 0.02 SUI to the receiver"
+          placeholder="e.g. Swap 0.05 SUI to tUSDC"
           disabled={busy}
           aria-label="Message Cipher"
         />

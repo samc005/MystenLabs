@@ -4,8 +4,9 @@ import { parseToMist } from "@mysten/sui/utils";
 import { z } from "zod";
 import { createSuiClient } from "../../blockchain/client.js";
 import { fundFromFaucet, waitForFaucet } from "../../blockchain/faucet.js";
-import { executeWalletTransaction, writeReceipt } from "../../blockchain/writes.js";
-import { requireAddress, requireWallet } from "../../blockchain/wallet.js";
+import { writeReceipt } from "../../blockchain/writes.js";
+import { configuredAddress, requireAddress } from "../../blockchain/address.js";
+import { unsignedTransactionResult } from "./approvedTransaction.js";
 import { resolveNetwork } from "../../config.js";
 
 function errorResult(error: unknown) {
@@ -34,13 +35,13 @@ export function registerWriteTools(server: McpServer): void {
     async () => {
       try {
         const network = resolveNetwork();
-        const wallet = await requireWallet(network);
-        const faucet = await fundFromFaucet(network, wallet.address);
+        const sender = configuredAddress(network);
+        const faucet = await fundFromFaucet(network, sender);
         await waitForFaucet(createSuiClient(network), faucet.digest);
         return {
           content: [{
             type: "text",
-            text: writeReceipt(network, faucet.digest, `Faucet credited ${faucet.amountMist} MIST to ${wallet.address}.`),
+            text: writeReceipt(network, faucet.digest, `Faucet credited ${faucet.amountMist} MIST to ${sender}.`),
           }],
         };
       } catch (error) {
@@ -80,7 +81,7 @@ export function registerWriteTools(server: McpServer): void {
     "split_coin",
     {
       description:
-        "Split a local wallet coin object into a new coin of the requested SUI amount. The new coin remains owned by the local wallet unless recipient is provided.",
+        "Prepare an unsigned transaction to split a local wallet coin object into a new coin of the requested SUI amount. The new coin remains owned by the local wallet unless recipient is provided.",
       inputSchema: z.object({
         coinId: z.string().min(1).describe("SUI coin object ID owned by the local wallet."),
         amount: z.string().describe('Amount to split in SUI, such as "0.01".'),
@@ -90,18 +91,12 @@ export function registerWriteTools(server: McpServer): void {
     async ({ coinId, amount, recipient }) => {
       try {
         const network = resolveNetwork();
-        const wallet = await requireWallet(network);
+        const sender = configuredAddress(network);
         const tx = new Transaction();
-        tx.setSender(wallet.address);
+        tx.setSender(sender);
         const [split] = tx.splitCoins(tx.object(coinId), [tx.pure.u64(positiveMist(amount))]);
-        tx.transferObjects([split], requireAddress(recipient ?? wallet.address));
-        const digest = await executeWalletTransaction({
-          client: createSuiClient(network),
-          network,
-          signer: wallet.keypair,
-          transaction: tx,
-        });
-        return { content: [{ type: "text", text: writeReceipt(network, digest, `Split ${amount} SUI from ${coinId}.`) }] };
+        tx.transferObjects([split], requireAddress(recipient ?? sender));
+        return await unsignedTransactionResult(createSuiClient(network), tx);
       } catch (error) {
         return errorResult(error);
       }
@@ -111,7 +106,7 @@ export function registerWriteTools(server: McpServer): void {
   server.registerTool(
     "merge_coins",
     {
-      description: "Merge local wallet SUI coin objects into a primary coin object.",
+      description: "Prepare an unsigned transaction to merge local wallet SUI coin objects into a primary coin object.",
       inputSchema: z.object({
         primaryCoinId: z.string().min(1).describe("Coin object that receives the balance."),
         coinIds: z.array(z.string().min(1)).min(1).max(50).describe("Other SUI coin objects to merge."),
@@ -120,18 +115,12 @@ export function registerWriteTools(server: McpServer): void {
     async ({ primaryCoinId, coinIds }) => {
       try {
         const network = resolveNetwork();
-        const wallet = await requireWallet(network);
+        const sender = configuredAddress(network);
         if (coinIds.includes(primaryCoinId)) throw new Error("primaryCoinId must not also appear in coinIds.");
         const tx = new Transaction();
-        tx.setSender(wallet.address);
+        tx.setSender(sender);
         tx.mergeCoins(tx.object(primaryCoinId), coinIds.map((coinId) => tx.object(coinId)));
-        const digest = await executeWalletTransaction({
-          client: createSuiClient(network),
-          network,
-          signer: wallet.keypair,
-          transaction: tx,
-        });
-        return { content: [{ type: "text", text: writeReceipt(network, digest, `Merged ${coinIds.length} coin(s) into ${primaryCoinId}.`) }] };
+        return await unsignedTransactionResult(createSuiClient(network), tx);
       } catch (error) {
         return errorResult(error);
       }
