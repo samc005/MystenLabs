@@ -1,3 +1,4 @@
+import { recordProposalExecution } from "./proposals";
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, writeFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -35,6 +36,17 @@ export async function executePrepared(id: string, approvalId: string) {
     const temp = path.join(approvals, id + '.tmp');
     await writeFile(temp, JSON.stringify({ ...input, expiresAtMs: Math.min(transaction.expires, Date.now() + 30_000) }), { mode: 0o600, flag: 'wx' });
     await rename(temp, path.join(approvals, id + '.json'));
-    return await mcp.callTool({ name: 'execute_approved_transaction', arguments: input });
+    const result = await mcp.callTool({ name: 'execute_approved_transaction', arguments: input });
+    const confirmation = result.structuredContent as { digest?: unknown; confirmed?: unknown } | undefined;
+    const proposal = transaction.command.match(/^execute (swap|payment) (prop_[0-9a-f]{10})$/);
+    if (!result.isError && confirmation?.confirmed === true && typeof confirmation.digest === "string" && proposal) {
+      try {
+        await recordProposalExecution(proposal[2]!, proposal[1] as "swap" | "payment", confirmation.digest);
+      } catch {
+        // The chain already confirmed: a UI storage failure must never imply a safe retry.
+        return { ...result, content: [...(result.content ?? []), { type: "text" as const, text: "Confirmed on chain, but the proposal card could not be updated. Check the digest before retrying." }] };
+      }
+    }
+    return result;
   } finally { await mcp.close().catch(() => undefined); }
 }
