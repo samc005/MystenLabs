@@ -5,6 +5,8 @@
   "main": "build/index.js",
   "scripts": {
     "build": "tsc",
+    "signer": "node build/signer/main.js",
+    "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "web": "tsx src/web.ts",
     "start": "tsx src/index.ts",

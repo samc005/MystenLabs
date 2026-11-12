@@ -18,7 +18,7 @@ flowchart TD
     end
 ```
 
-This diagram shows the conceptual transaction path. Balance reads query Sui through the blockchain service without requiring a signature. The [transaction flow design](tool-and-transaction-flows.md) proposes the blockchain service as the component that submits signed transactions; submission ownership remains an open decision.
+This diagram shows the conceptual transaction path. Balance reads query Sui through the blockchain service without requiring a signature. The wallet MCP submits signed bytes to Sui testnet after the isolated signer authorizes the exact transaction.
 
 | Layer | Responsibility | Proposed boundary |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ This diagram shows the conceptual transaction path. Balance reads query Sui thro
 
 Natural-language interpretation produces a request, not transaction authorization. The MCP server should validate the structured request independently of the model's interpretation.
 
-Wallet approval should show the network, sender, resolved recipient address, asset, amount, and available fee information. The wallet must sign the same transaction that was presented for review. The signing integration and its transport remain open design decisions.
+Wallet approval should show the network, sender, resolved recipient address, asset, amount, and available fee information. The wallet must sign the same transaction that was presented for review. The wallet MCP uses authenticated loopback HTTP to request a signature. The signer runs under a separate OS account, loads the key, and checks each request against a trusted approval record stored with signer-owned state.
 
 The Move contract can enforce rules only for operations that invoke it and use assets or capabilities under its control. A direct wallet transfer could bypass that policy. Before implementation, choose how assets are controlled and how every policy-governed transfer reaches the contract.
 
@@ -41,15 +41,13 @@ The Move contract can enforce rules only for operations that invoke it and use a
 
 The architecture targets Sui Testnet. Proposed runtime configuration includes the network endpoint, expected network, and any Move package or policy object identifiers. Wallet secrets belong to the signing layer and should not be part of tool arguments or model context.
 
-Persistent server state remains an open design decision. If approval or execution spans multiple tool calls, the system will need an operation record connecting the request, prepared transaction, approval, submission, and final result.
+The signer persists consumed proposal IDs before issuing a signature, including across restarts. The policy engine and proposal lifecycle must publish the approval record after evaluating the exact transaction bytes. Until that producer is wired up, requests without a trusted approval fail closed. See the [signer setup and approval contract](../wallet-mcp/README.md#isolated-signer).
 
 ## Decisions needed before implementation
 
 | Decision | Why it matters |
 | --- | --- |
 | MCP transport and AI host integration | Determines server startup and tool invocation |
-| Wallet provider and signing interface | Determines how approval requests and signatures travel |
-| Transaction submission owner | Avoids duplicate or ambiguous submission responsibilities |
 | Move policy and custody model | Determines which assets and transactions policy can govern |
 | Recipient resolution | “Bob” needs an explicit, reliable mapping to a Sui address |
 | Approval lifecycle | Determines whether transfer is synchronous or returns a pending operation |

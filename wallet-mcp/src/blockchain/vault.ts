@@ -14,7 +14,7 @@ import type { SuiNetwork } from "./client.js";
 import { formatAmount, getCoinInfo } from "./coins.js";
 import { netGasMist } from "./transfer.js";
 import type { TransferReceipt } from "./types.js";
-import { requireAddress } from "./wallet.js";
+import { requireAddress } from "./address.js";
 
 /** Sui rejects stakes below 1 SUI (staking_pool::MIN_STAKING_THRESHOLD). */
 export const MIN_STAKE_MIST = 1_000_000_000n;
@@ -529,7 +529,7 @@ export function formatRate(r: Pick<TradeRuleInfo, "rateNum" | "rateDen" | "inDec
 type VaultSpendInput = {
   client: SuiGrpcClient;
   network: SuiNetwork;
-  signer: Ed25519Keypair;
+  sender: string;
   recipient: string;
   amountMist: bigint;
 };
@@ -539,14 +539,14 @@ type VaultSpendInput = {
  * then builds the spend transaction. The contract re-checks every rule on-chain, so
  * these client checks are a convenience, not the security boundary.
  */
-async function prepareVaultSpend(input: VaultSpendInput) {
+export async function prepareVaultSpend(input: VaultSpendInput) {
   assertTestnet(input.network);
   if (input.amountMist <= 0n) {
     throw new Error("Amount must be greater than 0.");
   }
   const config = vaultConfig();
   const recipient = requireAddress(input.recipient);
-  const sender = input.signer.toSuiAddress();
+  const sender = requireAddress(input.sender);
 
   const status = await getVaultStatus(input.client, config);
   const sui = (mist: bigint) => `${formatUnits(mist, SUI_DECIMALS)} SUI`;
@@ -630,8 +630,8 @@ export function formatVaultDryRun(result: VaultDryRunResult): string {
 }
 
 /** Spends from the vault to `recipient`. The agent wallet only pays gas. */
-export async function vaultSpend(input: VaultSpendInput): Promise<TransferReceipt> {
-  const { tx, sender, recipient } = await prepareVaultSpend(input);
+export async function vaultSpend(input: Omit<VaultSpendInput, "sender"> & { signer: Ed25519Keypair }): Promise<TransferReceipt> {
+  const { tx, sender, recipient } = await prepareVaultSpend({ ...input, sender: input.signer.toSuiAddress() });
 
   const submitted = await input.client.signAndExecuteTransaction({
     transaction: tx,
@@ -686,7 +686,7 @@ export function formatVaultSpendReceipt(receipt: TransferReceipt): string {
 type VaultStakeInput = {
   client: SuiGrpcClient;
   network: SuiNetwork;
-  signer: Ed25519Keypair;
+  sender: string;
   validator: string;
   amountMist: bigint;
 };
@@ -697,11 +697,11 @@ type VaultStakeInput = {
  * convenience and not the security boundary. The StakedSui receipt is kept inside the
  * vault by the contract: this wallet never holds it and cannot unstake it.
  */
-async function prepareVaultStake(input: VaultStakeInput) {
+export async function prepareVaultStake(input: VaultStakeInput) {
   assertTestnet(input.network);
   const config = vaultConfig();
   const validator = requireAddress(input.validator);
-  const sender = input.signer.toSuiAddress();
+  const sender = requireAddress(input.sender);
   const sui = (mist: bigint) => `${formatUnits(mist, SUI_DECIMALS)} SUI`;
 
   if (input.amountMist < MIN_STAKE_MIST) {
@@ -802,8 +802,8 @@ export interface VaultStakeReceipt {
 }
 
 /** Stakes vault funds with an allowed validator. The agent wallet only pays gas. */
-export async function vaultStake(input: VaultStakeInput): Promise<VaultStakeReceipt> {
-  const { tx, sender, validator } = await prepareVaultStake(input);
+export async function vaultStake(input: Omit<VaultStakeInput, "sender"> & { signer: Ed25519Keypair }): Promise<VaultStakeReceipt> {
+  const { tx, sender, validator } = await prepareVaultStake({ ...input, sender: input.signer.toSuiAddress() });
 
   const submitted = await input.client.signAndExecuteTransaction({
     transaction: tx,

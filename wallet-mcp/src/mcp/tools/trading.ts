@@ -2,22 +2,21 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { createSuiClient } from "../../blockchain/client.js";
 import { formatAmount, parseUnits } from "../../blockchain/coins.js";
-import { executeSpendProposal, proposeSpend } from "../../blockchain/payments.js";
-import { describeProposal, getProposal, isProposalId, listProposals } from "../../blockchain/proposals.js";
+import { prepareSpendProposal, proposeSpend } from "../../blockchain/payments.js";
+import { describeProposal, isSwapProposal, getProposal, isProposalId, listProposals } from "../../blockchain/proposals.js";
 import {
   dryRunSwap,
-  executeProposal,
+  prepareSwap,
   formatQuote,
   formatSwapDryRun,
-  formatSwapReceipt,
   MAX_SLIPPAGE_BPS,
   proposeTrade,
   quoteSwap,
-  vaultSwap,
 } from "../../blockchain/swap.js";
 import { formatValidators, listValidators } from "../../blockchain/validators.js";
 import { getVaultStatus } from "../../blockchain/vault.js";
-import { requireWallet } from "../../blockchain/wallet.js";
+import { configuredAddress } from "../../blockchain/address.js";
+import { unsignedTransactionResult } from "./approvedTransaction.js";
 import { resolveNetwork } from "../../config.js";
 
 function errorResult(error: unknown) {
@@ -142,16 +141,15 @@ export function registerTrading(server: McpServer): void {
       try {
         if (!isProposalId(proposalId)) throw new Error(`"${proposalId}" is not a proposal ID.`);
         const network = resolveNetwork();
-        const wallet = await requireWallet(network);
         const client = createSuiClient(network);
-        const { text: body } = await executeSpendProposal({
-          client,
-          network,
-          signer: wallet.keypair,
-          proposalId,
-          dryRun,
+        const { tx } = await prepareSpendProposal({
+          client, network, sender: configuredAddress(network), proposalId,
         });
-        return text(body);
+        if (dryRun) {
+          const result = await client.simulateTransaction({ transaction: tx });
+          return text(result.$kind === "Transaction" ? "Simulation succeeded; nothing signed." : "Simulation failed; nothing signed.");
+        }
+        return await unsignedTransactionResult(client, tx);
       } catch (error) {
         return errorResult(error);
       }
@@ -215,7 +213,7 @@ export function registerTrading(server: McpServer): void {
     "vault_swap",
     {
       description:
-        "Execute a trade the owner has approved, or one a standing trade rule covers. Pass the proposalId of an approved proposal (or an intentId from vault_intents). " +
+        "Prepare an unsigned trade the owner has approved. Execution requires execute_approved_transaction with trusted policy approval. Pass the proposalId of an approved proposal (or an intentId from vault_intents). " +
         "The contract only allows it if the owner approved it on-chain, exactly once, before it expires, at no worse than the approved minimum; otherwise it is rejected. " +
         "The proceeds go back into the vault, not the agent wallet. If the proposal is still pending, do not call this: wait for the owner. Set dryRun to true to simulate without sending.",
       inputSchema: z.object({
@@ -228,21 +226,28 @@ export function registerTrading(server: McpServer): void {
       try {
         if (!proposalId && !intentId) throw new Error("Provide a proposalId or an intentId.");
         const network = resolveNetwork();
-        const wallet = await requireWallet(network);
+        const sender = configuredAddress(network);
         const client = createSuiClient(network);
         if (proposalId) {
-          const { text: body } = await executeProposal({
-            client,
-            network,
-            signer: wallet.keypair,
-            proposalId,
-            dryRun,
-          });
-          return text(body);
+          const proposal = await getProposal(proposalId);
+          if (!proposal || !isSwapProposal(proposal) || proposal.status !== "approved" || (!proposal.auto && !proposal.intentId)) {
+            throw new Error("Proposal must be approved on-chain before preparing a swap.");
+          }
+          if (proposal.auto) {
+            const input = { client, network, sender, standing: {
+              inType: proposal.inType, outType: proposal.outType,
+              amountIn: BigInt(proposal.amountIn), minOut: BigInt(proposal.minOut),
+            } };
+            if (dryRun) return text(formatSwapDryRun(await dryRunSwap(input)));
+            const { tx } = await prepareSwap(input);
+            return await unsignedTransactionResult(client, tx);
+          }
+          intentId = proposal.intentId;
         }
-        const input = { client, network, signer: wallet.keypair, intentId: intentId! };
+        const input = { client, network, sender, intentId: intentId! };
         if (dryRun) return text(formatSwapDryRun(await dryRunSwap(input)));
-        return text(formatSwapReceipt(await vaultSwap(input)));
+        const { tx } = await prepareSwap(input);
+        return await unsignedTransactionResult(client, tx);
       } catch (error) {
         return errorResult(error);
       }

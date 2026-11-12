@@ -16,7 +16,7 @@ import {
 } from "./proposals.js";
 import { netGasMist } from "./transfer.js";
 import { classifySpend, getVaultStatus } from "./vault.js";
-import { requireAddress } from "./wallet.js";
+import { requireAddress } from "./address.js";
 
 const sui = (mist: bigint) => `${formatUnits(mist, SUI_DECIMALS)} SUI`;
 
@@ -57,6 +57,59 @@ export async function proposeSpend(input: {
     amountMist: input.amountMist.toString(),
     reason: verdict.reason,
   });
+}
+
+/** Prepare an owner-approved payment without loading any private key. */
+export async function prepareSpendProposal(input: {
+  client: SuiGrpcClient; network: SuiNetwork; sender: string; proposalId: string;
+}) {
+  assertTestnet(input.network);
+  const proposal = await requireProposal(input.proposalId);
+  if (!isSpendProposal(proposal)) {
+    throw new Error(`Proposal ${proposal.id} is a swap, not a payment. Run it with vault_swap.`);
+  }
+  if (proposal.status === "executed") {
+    throw new Error("Proposal already executed.");
+  }
+  if (proposal.status !== "approved" || !proposal.intentId) {
+    throw new Error(
+      `Proposal ${proposal.id} is ${proposal.status}, not approved. ` +
+        (proposal.status === "pending"
+          ? "The owner has not approved it yet. Do not retry; wait for them to approve it in the UI."
+          : "It cannot be executed."),
+    );
+  }
+
+  const config = vaultConfig();
+  const sender = requireAddress(input.sender);
+  const status = await getVaultStatus(input.client, config);
+  if (status.paused) throw new Error("The vault is paused by its owner. No spends are allowed.");
+  const intent = status.spendIntents.find((i) => i.intentId === proposal.intentId);
+  if (!intent) {
+    throw new Error(
+      `No open approval ${proposal.intentId}. It was already used, cancelled, or never created.`,
+    );
+  }
+  if (Date.now() > intent.expiryMs) {
+    throw new Error(`The approval for ${proposal.id} expired at ${new Date(intent.expiryMs).toISOString()}.`);
+  }
+  if (intent.amountMist > status.balanceMist) {
+    throw new Error(`The vault only holds ${sui(status.balanceMist)}, less than the approved ${sui(intent.amountMist)}.`);
+  }
+
+  const tx = new Transaction();
+  tx.setSender(sender);
+  tx.moveCall({
+    target: `${config.packageId}::spending_vault::spend_approved`,
+    arguments: [
+      tx.object(config.agentCapId),
+      tx.object(config.vaultId),
+      tx.pure.id(intent.intentId),
+      tx.object.clock(),
+    ],
+  });
+
+  return { tx, proposal, intent };
 }
 
 /** Runs the payment the owner approved for a spend proposal. The agent wallet only pays gas. */

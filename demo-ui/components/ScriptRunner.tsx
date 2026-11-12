@@ -5,9 +5,7 @@ import { readNdjson } from "@/lib/ndjson";
 import type { ScriptEvent, ScriptName } from "@/app/api/scripts/route";
 
 const BUTTONS: { script: ScriptName; label: string; hint: string }[] = [
-  { script: "setup", label: "npm run setup", hint: "Create the sender wallet and fund it from the faucet (can take a few minutes)." },
-  { script: "demo", label: "npm run demo", hint: "Create the receiver wallet and send it 0.01 SUI." },
-  { script: "balance", label: "npm run balance", hint: "Print the sender's balances." },
+  { script: "balance", label: "npm run balance", hint: "Print balances for the configured public sender address." },
   { script: "install", label: "npm install", hint: "Install wallet-mcp dependencies." },
   { script: "build", label: "npm run build", hint: "Build the MCP server Cipher talks to." },
 ];
@@ -71,7 +69,7 @@ export function ScriptRunner({ onFinished }: Props) {
         {BUTTONS.map(({ script, label, hint }) => (
           <button
             key={script}
-            className={script === "setup" || script === "demo" ? "" : "secondary"}
+            className="secondary"
             title={hint}
             onClick={() => run(script)}
             disabled={running !== null}

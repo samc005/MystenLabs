@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { createSuiClient } from "../../blockchain/client.js";
-import { requireAddress } from "../../blockchain/wallet.js";
+import { requireAddress } from "../../blockchain/address.js";
 import { resolveNetwork } from "../../config.js";
 import { formatJson, resolveOwner } from "./toolUtils.js";
 
