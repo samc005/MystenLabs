@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { resolveWalletCommand } from "./wallet-intent";
 // The chat demo's agent loop: Claude on the Messages API, with tools that come
 // from the real wallet-mcp server. The server is started over stdio exactly as
@@ -15,7 +16,7 @@ export type ChatEvent =
   | { type: "text"; delta: string }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError: boolean }
-  | { type: "prepared"; id: string; command: string }
+  | { type: "prepared"; id: string; command: string; summary: string }
   | { type: "done"; messages: Anthropic.Beta.BetaMessageParam[] }
   | { type: "error"; message: string };
 
@@ -68,17 +69,18 @@ export async function runChatTurn(
   const mcp = await connectWalletMcp();
   try {
     assertToolAction(action, action.tool, action.args);
-    send({ type: "tool_call", id: "wallet-action", name: action.tool, input: action.args });
+    const toolId = randomUUID();
+    send({ type: "tool_call", id: toolId, name: action.tool, input: action.args });
     const result = await mcp.callTool({ name: action.tool, arguments: action.args });
     let output = toolResultText(result);
-    send({ type: "tool_result", id: "wallet-action", output, isError: Boolean(result.isError) });
+    send({ type: "tool_result", id: toolId, output, isError: Boolean(result.isError) });
     const structured = result.structuredContent as { transactionBytes?: unknown } | undefined;
     if (!result.isError && typeof structured?.transactionBytes === "string") {
       const simulation = await mcp.callTool({ name: "estimate_gas", arguments: { transactionBase64: structured.transactionBytes } });
       if (simulation.isError) throw new Error("Simulation failed. Nothing was signed or submitted.");
       output += "\n" + toolResultText(simulation);
-      const id = rememberPrepared(command, structured.transactionBytes);
-      send({ type: "prepared", id, command });
+      const id = rememberPrepared(command, structured.transactionBytes, output);
+      send({ type: "prepared", id, command, summary: output });
     }
     send({ type: "text", delta: output });
     send({ type: "done", messages: [] });

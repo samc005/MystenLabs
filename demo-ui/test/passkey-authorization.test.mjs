@@ -6,9 +6,9 @@ import path from 'node:path';
 import ts from 'typescript';
 const source = readFileSync(new URL('../lib/server/passkey.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
-function fixture() {
+function fixture(readError, raw) {
   const initial = { credentials: [{id:'owner',publicKey:'AA==',counter:0,label:'owner',createdAt:''}],revoked:false };
-  const fs = {readFile:async()=>JSON.stringify(initial),mkdir:async()=>{},writeFile:async()=>{}};
+  const fs = {readFile:async()=>{if(readError)throw readError;return raw ?? JSON.stringify(initial);},mkdir:async()=>{},writeFile:async()=>{}};
   const webauthn = {
     generateAuthenticationOptions:async()=>({challenge:'challenge'}),
     verifyAuthenticationResponse:async options=>{assert.equal(options.requireUserVerification,true);return {verified:true,authenticationInfo:{newCounter:1}};},
@@ -42,4 +42,13 @@ test('existing credential must authorize enrollment; transaction approval cannot
   await api.verifyRegistration(request,challengeId,{response:{transports:[]}});
   assert.equal((await api.passkeyStatus()).credentialCount,2);
   await assert.rejects(api.registrationOptions(request,approved.approvalId));
+});
+
+test('credential corruption and unreadable storage fail closed rather than allowing owner enrollment',async()=>{
+  for(const api of [fixture(undefined,'{broken'),fixture(Object.assign(new Error('denied'),{code:'EACCES'})),fixture(undefined,'{}')]) {
+    await assert.rejects(api.passkeyStatus(),/Cannot read passkey/);
+    await assert.rejects(api.registrationOptions(request));
+  }
+  const empty=fixture(Object.assign(new Error('missing'),{code:'ENOENT'}));
+  assert.equal((await empty.passkeyStatus()).registered,false);
 });

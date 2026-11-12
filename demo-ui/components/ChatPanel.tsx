@@ -32,7 +32,7 @@ export function ChatPanel({ onToolResult }: Props) {
   const [items, setItems] = useState<Item[]>([]);
   const [history, setHistory] = useState<Anthropic.Beta.BetaMessageParam[]>([]);
   const [input, setInput] = useState("");
-  const [prepared, setPrepared] = useState<{ id: string; command: string } | null>(null);
+  const [prepared, setPrepared] = useState<{ id: string; command: string; summary: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -92,7 +92,7 @@ export function ChatPanel({ onToolResult }: Props) {
       await readNdjson<ChatEvent>(response, (event) => {
         switch (event.type) {
           case "prepared":
-            setPrepared({ id: event.id, command: event.command });
+            setPrepared({ id: event.id, command: event.command, summary: event.summary });
             break;
           case "text":
             appendText(event.delta);
@@ -162,6 +162,7 @@ export function ChatPanel({ onToolResult }: Props) {
 
       {prepared && <div className="card">
         <p>Confirm testnet transaction: {prepared.command}</p>
+        <pre>{prepared.summary}</pre>
         <button onClick={execute} disabled={busy}>Approve with passkey and execute</button>
         <button onClick={() => setPrepared(null)} disabled={busy}>Cancel</button>
       </div>}

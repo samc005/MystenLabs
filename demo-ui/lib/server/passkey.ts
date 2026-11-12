@@ -54,12 +54,19 @@ async function loadStore(): Promise<Store> {
     storePromise = readFile(STORE_FILE, "utf8")
       .then((raw) => {
         const parsed = JSON.parse(raw) as Partial<Store>;
+        if (!Array.isArray(parsed.credentials) || typeof parsed.revoked !== "boolean") {
+          throw new Error("Invalid credential store.");
+        }
         return {
           credentials: Array.isArray(parsed.credentials) ? parsed.credentials : [],
           revoked: parsed.revoked === true,
         };
       })
-      .catch(() => ({ credentials: [], revoked: false }));
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return { credentials: [], revoked: false };
+        storePromise = undefined;
+        throw new Error("Cannot read passkey credentials. Restore the credential store before continuing.");
+      });
   }
   return storePromise;
 }

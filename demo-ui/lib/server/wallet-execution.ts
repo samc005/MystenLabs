@@ -4,19 +4,19 @@ import path from 'node:path';
 import { consumeApproval, passkeyStatus } from './passkey';
 import { connectWalletMcp } from './agent';
 
-const prepared = new Map<string, { command: string; bytes: string; expires: number }>();
-export function rememberPrepared(command: string, bytes: string): string {
+const prepared = new Map<string, { command: string; bytes: string; summary: string; expires: number }>();
+export function rememberPrepared(command: string, bytes: string, summary = ""): string {
   for (const [id, value] of prepared) if (value.expires <= Date.now()) prepared.delete(id);
   if (prepared.size >= 100) throw new Error('Too many pending transactions. Wait for them to expire.');
   const id = randomUUID();
-  prepared.set(id, { command, bytes, expires: Date.now() + 120_000 });
+  prepared.set(id, { command, bytes, summary, expires: Date.now() + 120_000 });
   return id;
 }
 export async function executePrepared(id: string, approvalId: string) {
   if ((await passkeyStatus()).revoked) throw new Error('Wallet access is locked.');
   const transaction = prepared.get(id);
   if (!transaction || transaction.expires <= Date.now()) throw new Error('Transaction missing, used, or expired. Prepare a new command.');
-  const hash = createHash('sha256').update(JSON.stringify({ action: 'execute-wallet-command', id, command: transaction.command })).digest('hex');
+  const hash = createHash('sha256').update(JSON.stringify({ action: 'execute-wallet-command', id, command: transaction.command, summary: transaction.summary })).digest('hex');
   await consumeApproval(approvalId, hash);
   // Claim before any asynchronous work: concurrent requests cannot submit twice.
   if (!prepared.delete(id)) throw new Error('Transaction already claimed.');

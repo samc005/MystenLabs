@@ -14,7 +14,7 @@ function fixture({failedSimulation=false,locked=false}={}) {
   const fs={stat:async()=>({isDirectory:()=>true,mode:0o700,uid:process.getuid()}),mkdir:async()=>{},writeFile:async(p,body)=>writes.push(JSON.parse(body)),rename:async()=>{}};
   const modules={'node:crypto':crypto,'node:fs/promises':fs,'node:path':path,'./passkey':{consumeApproval,passkeyStatus:async()=>({revoked:locked})},'./agent':{connectWalletMcp:async()=>mcp}};
   new Function('require','exports',compiled)(name=>modules[name],exports);
-  return {...exports,writes,calls,approve(id,command){const hash=crypto.createHash('sha256').update(JSON.stringify({action:'execute-wallet-command',id,command})).digest('hex');approvals.add('approval'+hash);}};
+  return {...exports,writes,calls,approve(id,command){const hash=crypto.createHash('sha256').update(JSON.stringify({action:'execute-wallet-command',id,command,summary:""})).digest('hex');approvals.add('approval'+hash);}};
 }
 process.env.SUI_SIGNER_STATE_DIR='/private/test-fixture';
 test('execution simulates and publishes only the server-stored bytes; concurrent replay fails',async()=>{
