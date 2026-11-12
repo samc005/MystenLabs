@@ -110,11 +110,15 @@ unbounded network requests.
 ### Spending vault tools
 
 The agent should hold only enough SUI for gas and spend through `vault_spend`.
-The contract enforces the per-spend limit, pause, and revocation.
+The contract enforces the per-spend limit, pause, and revocation, plus whatever
+owner policies are set (see [Owner policies](#owner-policies)).
 
 | Tool | Inputs | Behavior |
 |---|---|---|
-| `vault_status` | none | Reads vault balance, per-spend limit, total spent, and paused flag. |
+| `vault_status` | none | Reads vault balance, per-spend limit, total spent, paused flag, staking allowlist and positions, and other coins the vault may hold or holds. |
+| `vault_spend` | `to`, `amount`, `dryRun` optional | Pays from the vault under its on-chain rules. |
+| `vault_stake` | `validator`, `amount`, `dryRun` optional | Stakes vault funds with a validator the owner allowed, within the stake policy if one is set. The receipt stays in the vault. |
+
 | `vault_spend` | `to`, `amount`, `dryRun` optional | Prepares or simulates a vault payment. |
 | `vault_stake` | `validator`, `amount`, `dryRun` optional | Prepares or simulates a vault stake. |
 | `list_validators` | `limit` optional | Read-only list of active validators (commission, stake, voting power) and which are allowed. |
@@ -131,6 +135,9 @@ intent, once, and chooses only the route.
 | `swap_quote` | `sell`, `buy`, `amount` | Read-only price check on the testnet pool. |
 | `propose_trade` | `sell`, `buy`, `amount`, `slippageBps` optional | **Does not trade.** Quotes, records the exact terms, and shows the owner an approval card. `min_out` is computed from the live quote, not by the model. |
 | `get_proposal` | `proposalId` optional | Status of a proposal, or the recent ones. |
+| `vault_intents` | none | Lists on-chain approved trades and payments that have not run yet. |
+| `vault_swap` | `proposalId` or `intentId`, `dryRun` optional | Runs an approved trade, or one a standing trade rule covers. Rejected by the contract otherwise. Proceeds go back into the vault. |
+
 | `vault_intents` | none | Lists on-chain approved trades that have not run yet. |
 | `vault_swap` | `proposalId` or `intentId`, `dryRun` optional | Prepares an unsigned approved trade. Submit its exact bytes through execute_approved_transaction after trusted policy approval. Proceeds go back into the vault. |
 
@@ -161,6 +168,66 @@ owner-set price and a 0.30% fee, so the flow works regardless of real testnet
 liquidity. The vault does not depend on it; any DEX that takes a coin and returns a
 coin can be added in `src/blockchain/dex.ts`. In the Cipher chat, a proposal shows
 as an approval card; approving signs `create_intent` and Cipher then runs it.
+
+### Owner policies
+
+Hard limits the agent cannot exceed, set by the owner and enforced by the contract.
+All are optional and **off by default**: a vault with no policy behaves as before
+(per-spend limit only), so configure them for every new vault.
+
+| Policy | What it limits | Owner command |
+|---|---|---|
+| Spending cap | Total direct `vault_spend` per epoch (about a day). With `allowlist`, also only to listed recipients. | `spend-policy <sui> [any\|allowlist]`, `allow-recipient`, `disallow-recipient`, `clear-spend-policy` |
+| Stake policy | Total staked, a liquid reserve the agent cannot stake into, and number of positions. | `stake-policy <maxStaked> <reserve> <positions>`, `clear-stake-policy` |
+| Standing trade rule | One pair, one direction: max per trade, max per epoch, a price floor, and an expiry. Inside it a swap needs no per-trade approval. | `trade-rule <sell> <buy> <maxTrade> <maxEpoch> <minPrice> [hours]`, `remove-trade-rule` |
+
+Anything outside a policy is not refused outright: the agent calls `propose_spend`
+(or `propose_trade`), the owner sees an approval card, and approving signs a
+single-use on-chain approval for exactly that recipient and amount.
+
+| Tool | Inputs | Behavior |
+|---|---|---|
+| `propose_spend` | `recipient`, `amount` | **Does not pay.** Records a payment that needs approval and shows the owner a card. Refuses payments the policy already allows. |
+| `vault_spend_approved` | `proposalId`, `dryRun` optional | Pays an approved spend proposal. The contract pays only the approved recipient and amount, once, before it expires. |
+
+Standing trade rules: `propose_trade` checks the rule. If it covers the trade, the
+proposal is created already approved (no card) and `vault_swap` runs it through
+`begin_swap_auto`, which re-checks the rule on-chain. The agent still chooses
+`amount_in` and `min_out`, but the contract rejects a trade over the size or epoch
+limits, or with `min_out` below the owner's floor.
+
+```powershell
+npm run owner -- spend-policy 0.05 allowlist
+npm run owner -- allow-recipient 0x...
+npm run owner -- stake-policy 2 0.05 2
+npm run owner -- trade-rule SUI tUSDC 0.05 0.1 1.5 24   # sell up to 0.05 SUI, floor 1.5 tUSDC per SUI
+npm run owner -- spend-intent 0x... 0.08                # approve one payment directly
+npm run vault -- spend-approved prop_xxxxxxxxxx --dry-run
+```
+
+What these do **not** do:
+
+- **The price floor is the owner's number, not an oracle.** If the market falls below
+  it the rule simply stops matching; if the owner sets it far below the market, the
+  agent could sell cheaply inside the size limits. Keep the floor near the market and
+  the limits small.
+- **The per-epoch caps are per Sui epoch, not per rolling 24 hours.** A spender can
+  use a full cap just before an epoch boundary and again just after, up to twice the
+  cap in a short time.
+- **A DEX or pool allowlist cannot be enforced on-chain.** The contract sees only the
+  output coin and `min_out`, not which pool the agent routed through.
+- **The Approve button signs with the owner's CLI key**, using the keystore on this
+  machine. It is not a wallet signature the owner reviews. Anyone who controls this
+  machine controls the owner key.
+- **The owner and upgrade authority are single keys.** There is no multisig or
+  timelock on the `OwnerCap` or the package `UpgradeCap`; an upgrade can change what
+  every rule does.
+- **The agent key lives in the MCP process.** There is no isolated signer.
+- **Stake counters are kept by the contract.** Positions opened before a stake policy
+  existed are synced when the owner sets the policy (`stake-policy` does this from the
+  vault's actual receipts). Unstaking never fails because of a counter.
+
+### Testnet write tools
 
 ### Testnet transaction tools
 

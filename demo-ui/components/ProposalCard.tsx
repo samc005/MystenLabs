@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { explorerTx, formatUnits, type Proposal } from "@/lib/proposals";
+import { explorerTx, formatUnits, isSpendProposal, type Proposal } from "@/lib/proposals";
 
 interface Props {
   id: string;
@@ -90,79 +90,134 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
   if (!proposal) return <div className="proposal-card muted">Loading proposal…</div>;
 
   const p = proposal;
-  const sell = `${formatUnits(p.amountIn, p.inDecimals)} ${p.inSymbol}`;
-  const min = `${formatUnits(p.minOut, p.outDecimals)} ${p.outSymbol}`;
-  const quoted = `${formatUnits(p.quotedOut, p.outDecimals)} ${p.outSymbol}`;
   const remaining =
     p.status === "pending" ? p.approvalDeadlineMs - now : p.status === "approved" && p.intentExpiryMs ? p.intentExpiryMs - now : null;
+  const spend = isSpendProposal(p);
+  const auto = !spend && p.auto === true;
+  const approvalLabel = p.status === "pending" ? "Approve within" : "Cipher must run it within";
+
+  const actions = (
+    <div className="proposal-actions">
+      <button onClick={() => void decide("approve")} disabled={acting !== null}>
+        {acting === "approve" ? "Signing…" : spend ? "Approve payment" : "Approve trade"}
+      </button>
+      <button className="ghost" onClick={() => void decide("reject")} disabled={acting !== null}>
+        {acting === "reject" ? "Rejecting…" : "Reject"}
+      </button>
+    </div>
+  );
+
+  const links = (
+    <>
+      {p.approvalDigest && (
+        <a href={explorerTx(p.approvalDigest)} target="_blank" rel="noreferrer">
+          approval tx
+        </a>
+      )}
+      {spend && p.spendDigest && (
+        <a href={explorerTx(p.spendDigest)} target="_blank" rel="noreferrer">
+          payment tx
+        </a>
+      )}
+      {!spend && p.swapDigest && (
+        <a href={explorerTx(p.swapDigest)} target="_blank" rel="noreferrer">
+          swap tx
+        </a>
+      )}
+    </>
+  );
+  const hasLinks = Boolean(p.approvalDigest || (spend ? p.spendDigest : p.swapDigest));
 
   return (
     <div className={`proposal-card ${p.status}`}>
       <div className="proposal-head">
-        <span className="tool-badge">Trade proposal</span>
-        <span className={`status-pill ${p.status}`}>{STATUS_LABEL[p.status]}</span>
+        <span className="tool-badge">{spend ? "Payment approval" : auto ? "Trade (standing rule)" : "Trade proposal"}</span>
+        <span className={`status-pill ${p.status}`}>
+          {auto && p.status === "approved" ? "Covered by your standing rule" : STATUS_LABEL[p.status]}
+        </span>
       </div>
 
-      <div className="proposal-trade">
-        <span className="proposal-sell">{sell}</span>
-        <span className="proposal-arrow" aria-hidden>→</span>
-        <span className="proposal-buy">at least {min}</span>
-      </div>
-
-      <dl className="proposal-facts">
-        <dt>Quoted</dt>
-        <dd>{quoted} (fee included)</dd>
-        <dt>Slippage allowed</dt>
-        <dd>{p.slippageBps / 100}%</dd>
-        <dt>Venue</dt>
-        <dd>{p.dex}</dd>
-        {remaining !== null && (
-          <>
-            <dt>{p.status === "pending" ? "Approve within" : "Cipher must run it within"}</dt>
-            <dd>{mmss(remaining)}</dd>
-          </>
-        )}
-      </dl>
-
-      {p.status === "pending" && (
+      {spend ? (
         <>
-          <p className="proposal-note">
-            Approving signs an on-chain intent from your owner key for exactly this trade. Cipher can run it once and cannot change the amounts. If the swap
-            returns less than the minimum, the contract rejects it.
-          </p>
-          <div className="proposal-actions">
-            <button onClick={() => void decide("approve")} disabled={acting !== null}>
-              {acting === "approve" ? "Signing…" : "Approve trade"}
-            </button>
-            <button className="ghost" onClick={() => void decide("reject")} disabled={acting !== null}>
-              {acting === "reject" ? "Rejecting…" : "Reject"}
-            </button>
+          <div className="proposal-trade">
+            <span className="proposal-sell">{formatUnits(p.amountMist, 9)} SUI</span>
+            <span className="proposal-arrow" aria-hidden>→</span>
+            <span className="proposal-buy">{p.recipient}</span>
           </div>
+          <dl className="proposal-facts">
+            <dt>Needs approval because</dt>
+            <dd>{p.reason}</dd>
+            {remaining !== null && (
+              <>
+                <dt>{approvalLabel}</dt>
+                <dd>{mmss(remaining)}</dd>
+              </>
+            )}
+          </dl>
+          {p.status === "pending" && (
+            <>
+              <p className="proposal-note">
+                Approving signs an on-chain approval from your owner key for exactly this recipient and amount. Cipher can use it once and cannot change either.
+              </p>
+              {actions}
+            </>
+          )}
+          {p.status === "approved" && <p className="proposal-note">Approved. Cipher can now make this payment.</p>}
+          {p.status === "executed" && <p className="proposal-note">Paid from the vault.</p>}
         </>
-      )}
-
-      {p.status === "approved" && <p className="proposal-note">Approved. Cipher can now run this trade.</p>}
-      {p.status === "executed" && p.amountOut && (
-        <p className="proposal-note">
-          Received {formatUnits(p.amountOut, p.outDecimals)} {p.outSymbol}, now in the vault&apos;s trading sleeve.
-        </p>
+      ) : (
+        <>
+          <div className="proposal-trade">
+            <span className="proposal-sell">{`${formatUnits(p.amountIn, p.inDecimals)} ${p.inSymbol}`}</span>
+            <span className="proposal-arrow" aria-hidden>→</span>
+            <span className="proposal-buy">at least {`${formatUnits(p.minOut, p.outDecimals)} ${p.outSymbol}`}</span>
+          </div>
+          <dl className="proposal-facts">
+            <dt>Quoted</dt>
+            <dd>{`${formatUnits(p.quotedOut, p.outDecimals)} ${p.outSymbol}`} (fee included)</dd>
+            <dt>Slippage allowed</dt>
+            <dd>{p.slippageBps / 100}%</dd>
+            <dt>Venue</dt>
+            <dd>{p.dex}</dd>
+            {p.ruleNote && (
+              <>
+                <dt>Standing rule not used</dt>
+                <dd>{p.ruleNote}</dd>
+              </>
+            )}
+            {remaining !== null && (
+              <>
+                <dt>{approvalLabel}</dt>
+                <dd>{mmss(remaining)}</dd>
+              </>
+            )}
+          </dl>
+          {p.status === "pending" && (
+            <>
+              <p className="proposal-note">
+                Approving signs an on-chain intent from your owner key for exactly this trade. Cipher can run it once and cannot change the amounts. If the swap
+                returns less than the minimum, the contract rejects it.
+              </p>
+              {actions}
+            </>
+          )}
+          {p.status === "approved" && (
+            <p className="proposal-note">
+              {auto
+                ? "No approval needed: your standing trade rule covers this swap. The contract re-checks the rule and the price floor when it runs."
+                : "Approved. Cipher can now run this trade."}
+            </p>
+          )}
+          {p.status === "executed" && p.amountOut && (
+            <p className="proposal-note">
+              Received {formatUnits(p.amountOut, p.outDecimals)} {p.outSymbol}, now in the vault&apos;s trading sleeve.
+            </p>
+          )}
+        </>
       )}
       {p.status === "expired" && <p className="proposal-note">The approval window closed. Ask Cipher for a new proposal.</p>}
 
-      {(p.approvalDigest || p.swapDigest) && (
-        <p className="proposal-links">
-          {p.approvalDigest && (
-            <a href={explorerTx(p.approvalDigest)} target="_blank" rel="noreferrer">
-              approval tx
-            </a>
-          )}
-          {p.swapDigest && (
-            <a href={explorerTx(p.swapDigest)} target="_blank" rel="noreferrer">
-              swap tx
-            </a>
-          )}
-        </p>
-      )}
+      {hasLinks && <p className="proposal-links">{links}</p>}
       {actionError && <p className="proposal-error">{actionError}</p>}
       {p.error && p.status !== "executed" && <p className="proposal-error">{p.error}</p>}
     </div>
