@@ -217,6 +217,11 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
           )}
         </>
       )}
+      {p.status === "approved" && (
+        <button onClick={() => onApproved(p)} disabled={acting !== null}>
+          Prepare approved transaction
+        </button>
+      )}
       {p.status === "expired" && <p className="proposal-note">The approval window closed. Ask Cipher for a new proposal.</p>}
 
       {hasLinks && <p className="proposal-links">{links}</p>}
