@@ -1,10 +1,8 @@
-// Read-only view of the sibling wallet-mcp package: where it lives, whether it is
-// built, and which local wallets its npm scripts have created. Secret keys are
-// never read into a response.
+// Public configuration and live balances for the wallet panel.
 
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import { createSuiClient, getSuiBalance } from "@/lib/sui";
 
 export const WALLET_ROLES = ["sender", "receiver"] as const;
@@ -45,31 +43,27 @@ export function walletMcpStatus(): WalletMcpStatus {
   };
 }
 
-async function readAddress(role: LocalWalletRole): Promise<{ address: string; network: string } | undefined> {
-  try {
-    const raw = await readFile(path.join(walletMcpDir(), ".wallet", `${role}.json`), "utf8");
-    const parsed = JSON.parse(raw) as { address?: unknown; network?: unknown };
-    if (typeof parsed.address !== "string") return undefined;
-    return { address: parsed.address, network: typeof parsed.network === "string" ? parsed.network : "unknown" };
-  } catch {
-    return undefined;
-  }
+export function configuredWalletAddress(role: LocalWalletRole): string | undefined {
+  const value = role === "sender" ? process.env.SUI_ADDRESS : process.env.SUI_RECEIVER_ADDRESS;
+  if (!value) return undefined;
+  const address = normalizeSuiAddress(value);
+  return isValidSuiAddress(address) ? address : undefined;
 }
 
-/** The wallets wallet-mcp's scripts have created, with live testnet balances. */
+/** The configured public addresses, with live testnet balances. */
 export async function listLocalWallets(): Promise<LocalWallet[]> {
   const client = createSuiClient();
   const found = await Promise.all(
     WALLET_ROLES.map(async (role) => {
-      const stored = await readAddress(role);
-      if (!stored) return undefined;
+      const address = configuredWalletAddress(role);
+      if (!address) return undefined;
       let balanceMist: string | null = null;
       try {
-        balanceMist = (await getSuiBalance(client, stored.address)).toString();
+        balanceMist = (await getSuiBalance(client, address)).toString();
       } catch {
         // Leave the balance unknown; the address is still useful.
       }
-      return { role, ...stored, balanceMist };
+      return { role, address, network: "testnet", balanceMist };
     }),
   );
   return found.filter((wallet): wallet is LocalWallet => wallet !== undefined);

@@ -5,7 +5,7 @@ Two demos of the Sui testnet wallet. Testnet coins have no value.
 | Demo | Route | Runs where | What it shows |
 |---|---|---|---|
 | Browser wallet | `/browser-wallet` | Anywhere, including Vercel | Create a wallet in the page, fund it, send SUI, and see each action as the MCP tool call an AI would make. |
-| Chat with Cipher | `/chat` | Your machine only | Type a request. Cipher, an assistant powered by Claude, calls `get_balance` and `transfer_sui` on the real `wallet-mcp` server, using the wallets its npm scripts created, and the balances update live. |
+| Chat with Cipher | `/chat` | Your machine only | Type a request. Cipher, an assistant powered by Claude, calls the wallet MCP tools and shows live balances for configured public addresses. |
 
 ## Run locally
 
@@ -34,18 +34,17 @@ Browser ──▶ /api/chat ──▶ Claude (Messages API, your key)
                 ▼                 ▼
          wallet-mcp MCP server (stdio, build/index.js) ──▶ Sui testnet
                 │
-          wallet-mcp/.wallet/sender.json, receiver.json
+          isolated signer (loopback HTTP)
 ```
 
-1. Put your key in `demo-ui/.env.local` (gitignored):
+1. Put your Anthropic key and public testnet addresses in `demo-ui/.env.local` (gitignored). For signing, configure the signer IPC token and optional port as described in the [wallet-mcp signer setup](../wallet-mcp/README.md#isolated-signer).
    ```
    ANTHROPIC_API_KEY=sk-ant-...
+   SUI_ADDRESS=0x...
+   SUI_RECEIVER_ADDRESS=0x...
    ```
-2. Start the app and open `/chat`. The panel shows a checklist. Use its buttons for anything missing:
-   - `npm install` and `npm run build` prepare `wallet-mcp`.
-   - `npm run setup` creates and funds the sender (the faucet can take a few minutes).
-   - `npm run demo` creates the receiver and sends it 0.01 SUI.
-3. Ask Cipher things like "What's my balance?" or "Send 0.02 SUI to the receiver".
+2. Start the app and open `/chat`. Use the install and build buttons to prepare wallet-mcp.
+3. Ask Cipher "What's my balance?" or ask it to prepare a vault payment. Execution requires a trusted policy-approved proposal.
 
 How it works:
 
@@ -53,8 +52,6 @@ How it works:
 - The page streams Cipher's text and each tool call and result, and refreshes balances after every tool result.
 - [app/api/scripts/route.ts](app/api/scripts/route.ts) runs only a fixed list of `wallet-mcp` npm scripts, one at a time.
 - [lib/server/local-only.ts](lib/server/local-only.ts) refuses any request that is not to localhost, from a localhost page, with a JSON body. On Vercel the chat routes always refuse, so a deploy never spends your key.
-
-`transfer_sui` signs inside the `wallet-mcp` process with no policy check yet. That is phase 2 in [docs/DESIGN.md](../docs/DESIGN.md).
 
 ## Deploy to Vercel
 

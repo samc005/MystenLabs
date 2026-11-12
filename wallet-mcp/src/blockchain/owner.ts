@@ -22,7 +22,7 @@ import { getDex } from "./dex.js";
 import { requireProposal, updateProposal, type Proposal } from "./proposals.js";
 import { netGasMist } from "./transfer.js";
 import { getVaultStatus } from "./vault.js";
-import { requireAddress } from "./wallet.js";
+import { requireAddress } from "./address.js";
 
 export function keystorePath(): string {
   return process.env.SUI_KEYSTORE_PATH ?? join(homedir(), ".sui", "sui_config", "sui.keystore");

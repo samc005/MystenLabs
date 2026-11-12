@@ -1,8 +1,8 @@
-import { requireAddress, requireWallet } from "../../blockchain/wallet.js";
+import { requireAddress, configuredAddress } from "../../blockchain/address.js";
 import { type SuiNetwork } from "../../blockchain/client.js";
 
 export async function resolveOwner(network: SuiNetwork, address?: string): Promise<string> {
-  return address ? requireAddress(address) : (await requireWallet(network)).address;
+  return address ? requireAddress(address) : configuredAddress(network);
 }
 
 export function formatJson(value: unknown): string {

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
 import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import "dotenv/config";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -19,6 +19,14 @@ async function connectMcp(): Promise<void> {
     command: process.execPath,
     args: [join(packageRoot, "build", "index.js")],
     cwd: packageRoot,
+    env: {
+      ...getDefaultEnvironment(),
+      SUI_NETWORK: process.env.SUI_NETWORK ?? "testnet",
+      SUI_ADDRESS: process.env.SUI_ADDRESS ?? "",
+      SUI_SIGNER_PORT: process.env.SUI_SIGNER_PORT ?? "38435",
+      SUI_SIGNER_TOKEN: process.env.SUI_SIGNER_TOKEN ?? "",
+      SUI_ENABLE_DIRECT_TRANSFER: process.env.SUI_ENABLE_DIRECT_TRANSFER ?? "",
+    },
   });
   await mcp.connect(transport);
   connected = true;

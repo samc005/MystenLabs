@@ -10,6 +10,7 @@ import { registerListTransactions } from "./listTransactions.js";
 import { registerTransfer } from "./transfer.js";
 import { registerExtendedReadOnlyTools } from "./extendedReadOnly.js";
 import { registerWriteTools } from "./writeTools.js";
+import { registerApprovedTransaction } from "./approvedTransaction.js";
 import { registerVault } from "./vault.js";
 import { registerTrading } from "./trading.js";
 
@@ -25,6 +26,7 @@ export function registerTools(server: McpServer): void {
   registerExtendedReadOnlyTools(server);
   registerWriteTools(server);
   registerVault(server);
+  registerApprovedTransaction(server);
   // Swaps: the agent can quote, propose, and run trades the owner approved on-chain.
   // Approving and the owner key are never reachable from here.
   registerTrading(server);

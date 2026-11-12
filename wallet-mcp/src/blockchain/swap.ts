@@ -1,3 +1,4 @@
+import { requireAddress } from "./address.js";
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
@@ -119,7 +120,7 @@ export async function proposeTrade(
 type SwapInput = {
   client: SuiGrpcClient;
   network: SuiNetwork;
-  signer: Ed25519Keypair;
+  sender: string;
   intentId: string;
 };
 
@@ -129,10 +130,10 @@ type SwapInput = {
  * The contract re-checks everything on-chain; these checks are a convenience, not the
  * security boundary. If the PTB does not call finish_swap it cannot execute at all.
  */
-async function prepareSwap(input: SwapInput) {
+export async function prepareSwap(input: SwapInput) {
   assertTestnet(input.network);
   const config = vaultConfig();
-  const sender = input.signer.toSuiAddress();
+  const sender = requireAddress(input.sender);
   const status = await getVaultStatus(input.client, config);
   if (status.paused) throw new Error("The vault is paused by its owner. No trades are allowed.");
 
@@ -226,8 +227,8 @@ export interface SwapReceipt {
 }
 
 /** Executes an approved intent. The agent wallet only pays gas. */
-export async function vaultSwap(input: SwapInput): Promise<SwapReceipt> {
-  const { tx, sender, intent } = await prepareSwap(input);
+export async function vaultSwap(input: Omit<SwapInput, "sender"> & { signer: Ed25519Keypair }): Promise<SwapReceipt> {
+  const { tx, sender, intent } = await prepareSwap({ ...input, sender: input.signer.toSuiAddress() });
   const submitted = await input.client.signAndExecuteTransaction({
     transaction: tx,
     signer: input.signer,
@@ -276,7 +277,7 @@ export function formatSwapReceipt(r: SwapReceipt): string {
  * Refuses unless the proposal was approved (the on-chain intent is the real check).
  */
 export async function executeProposal(
-  input: Omit<SwapInput, "intentId"> & { proposalId: string; dryRun?: boolean },
+  input: Omit<SwapInput, "intentId" | "sender"> & { signer: Ed25519Keypair; proposalId: string; dryRun?: boolean },
 ): Promise<{ proposal: Proposal; text: string }> {
   const proposal = await requireProposal(input.proposalId);
   if (proposal.status === "executed") {
@@ -290,7 +291,7 @@ export async function executeProposal(
           : "It cannot be executed."),
     );
   }
-  const swapInput: SwapInput = { client: input.client, network: input.network, signer: input.signer, intentId: proposal.intentId };
+  const swapInput = { client: input.client, network: input.network, signer: input.signer, sender: input.signer.toSuiAddress(), intentId: proposal.intentId };
   if (input.dryRun) return { proposal, text: formatSwapDryRun(await dryRunSwap(swapInput)) };
   try {
     const receipt = await vaultSwap(swapInput);

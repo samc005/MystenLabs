@@ -5,18 +5,17 @@ import { formatAmount } from "../../blockchain/coins.js";
 import { describeProposal, getProposal, isProposalId, listProposals } from "../../blockchain/proposals.js";
 import {
   dryRunSwap,
-  executeProposal,
+  prepareSwap,
   formatQuote,
   formatSwapDryRun,
-  formatSwapReceipt,
   MAX_SLIPPAGE_BPS,
   proposeTrade,
   quoteSwap,
-  vaultSwap,
 } from "../../blockchain/swap.js";
 import { formatValidators, listValidators } from "../../blockchain/validators.js";
 import { getVaultStatus } from "../../blockchain/vault.js";
-import { requireWallet } from "../../blockchain/wallet.js";
+import { configuredAddress } from "../../blockchain/address.js";
+import { unsignedTransactionResult } from "./approvedTransaction.js";
 import { resolveNetwork } from "../../config.js";
 
 function errorResult(error: unknown) {
@@ -142,7 +141,7 @@ export function registerTrading(server: McpServer): void {
     "vault_swap",
     {
       description:
-        "Execute a trade the owner has approved. Pass the proposalId of an approved proposal (or an intentId from vault_intents). " +
+        "Prepare an unsigned trade the owner has approved. Execution requires execute_approved_transaction with trusted policy approval. Pass the proposalId of an approved proposal (or an intentId from vault_intents). " +
         "The contract only allows it if the owner approved it on-chain, exactly once, before it expires, at no worse than the approved minimum; otherwise it is rejected. " +
         "The proceeds go back into the vault, not the agent wallet. If the proposal is still pending, do not call this: wait for the owner. Set dryRun to true to simulate without sending.",
       inputSchema: z.object({
@@ -155,21 +154,19 @@ export function registerTrading(server: McpServer): void {
       try {
         if (!proposalId && !intentId) throw new Error("Provide a proposalId or an intentId.");
         const network = resolveNetwork();
-        const wallet = await requireWallet(network);
+        const sender = configuredAddress(network);
         const client = createSuiClient(network);
         if (proposalId) {
-          const { text: body } = await executeProposal({
-            client,
-            network,
-            signer: wallet.keypair,
-            proposalId,
-            dryRun,
-          });
-          return text(body);
+          const proposal = await getProposal(proposalId);
+          if (!proposal || proposal.status !== "approved" || !proposal.intentId) {
+            throw new Error("Proposal must be approved on-chain before preparing a swap.");
+          }
+          intentId = proposal.intentId;
         }
-        const input = { client, network, signer: wallet.keypair, intentId: intentId! };
+        const input = { client, network, sender, intentId: intentId! };
         if (dryRun) return text(formatSwapDryRun(await dryRunSwap(input)));
-        return text(formatSwapReceipt(await vaultSwap(input)));
+        const { tx } = await prepareSwap(input);
+        return await unsignedTransactionResult(client, tx);
       } catch (error) {
         return errorResult(error);
       }
