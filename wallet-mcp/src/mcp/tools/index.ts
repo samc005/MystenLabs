@@ -12,6 +12,7 @@ import { registerExtendedReadOnlyTools } from "./extendedReadOnly.js";
 import { registerWriteTools } from "./writeTools.js";
 import { registerApprovedTransaction } from "./approvedTransaction.js";
 import { registerVault } from "./vault.js";
+import { registerTrading } from "./trading.js";
 
 export function registerTools(server: McpServer): void {
   registerGetAddress(server);
@@ -26,6 +27,9 @@ export function registerTools(server: McpServer): void {
   registerWriteTools(server);
   registerVault(server);
   registerApprovedTransaction(server);
+  // Swaps: the agent can quote, propose, and run trades the owner approved on-chain.
+  // Approving and the owner key are never reachable from here.
+  registerTrading(server);
   // Direct transfers spend from the agent's own wallet and bypass every vault rule
   // (limit, pause, revoke). Off by default; the agent should spend through the vault.
   if (process.env.SUI_ENABLE_DIRECT_TRANSFER === "true") {

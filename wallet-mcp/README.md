@@ -117,6 +117,50 @@ The contract enforces the per-spend limit, pause, and revocation.
 | `vault_status` | none | Reads vault balance, per-spend limit, total spent, and paused flag. |
 | `vault_spend` | `to`, `amount`, `dryRun` optional | Prepares or simulates a vault payment. |
 | `vault_stake` | `validator`, `amount`, `dryRun` optional | Prepares or simulates a vault stake. |
+| `list_validators` | `limit` optional | Read-only list of active validators (commission, stake, voting power) and which are allowed. |
+
+### Trading tools (owner-approved swaps)
+
+The agent can never trade on its own. The owner moves funds into a **trading
+sleeve** and approves each trade on-chain as an **intent**: sell exactly `X` of coin
+A for at least `Y` of coin B before a deadline. The agent can only run an approved
+intent, once, and chooses only the route.
+
+| Tool | Inputs | Behavior |
+|---|---|---|
+| `swap_quote` | `sell`, `buy`, `amount` | Read-only price check on the testnet pool. |
+| `propose_trade` | `sell`, `buy`, `amount`, `slippageBps` optional | **Does not trade.** Quotes, records the exact terms, and shows the owner an approval card. `min_out` is computed from the live quote, not by the model. |
+| `get_proposal` | `proposalId` optional | Status of a proposal, or the recent ones. |
+| `vault_intents` | none | Lists on-chain approved trades that have not run yet. |
+| `vault_swap` | `proposalId` or `intentId`, `dryRun` optional | Prepares an unsigned approved trade. Submit its exact bytes through execute_approved_transaction after trusted policy approval. Proceeds go back into the vault. |
+
+The swap is one atomic transaction: `begin_swap` returns the coins plus a
+`SwapTicket` hot potato, the DEX call runs, and `finish_swap` consumes the ticket,
+checks the output against the owner's `min_out`, and deposits it into the vault. A
+transaction that skips `finish_swap` cannot execute at all.
+
+Owner commands (need the key that holds the `OwnerCap`, read from the Sui CLI
+keystore; never reachable from an MCP tool):
+
+```powershell
+npm run owner -- status
+npm run owner -- allocate 0.3            # move SUI into the trading sleeve
+npm run owner -- intent SUI tUSDC 0.1 0.19 10   # approve one trade directly
+npm run owner -- proposals               # trades Cipher proposed in chat
+npm run owner -- approve prop_xxxxxxxxxx # what the UI's Approve button runs
+npm run owner -- cancel 0xIntentId
+npm run owner -- allow-validator 0x...   # also: disallow-validator, unstake
+npm run owner -- pool-price 3.0          # move the testnet mock pool's price
+npm run vault -- quote SUI tUSDC 1
+npm run vault -- swap prop_xxxxxxxxxx --dry-run
+npm run boundaries -- --live-intent      # attack checks, incl. the on-chain price floor
+```
+
+The swap venue on testnet is `testnet_pool/`: a fixed-rate SUI/tUSDC pool with an
+owner-set price and a 0.30% fee, so the flow works regardless of real testnet
+liquidity. The vault does not depend on it; any DEX that takes a coin and returns a
+coin can be added in `src/blockchain/dex.ts`. In the Cipher chat, a proposal shows
+as an approval card; approving signs `create_intent` and Cipher then runs it.
 
 ### Testnet transaction tools
 
@@ -188,6 +232,14 @@ producer must have trusted write access through the signer account. The
 model-facing process receives only the public address, IPC token, and proposal
 details. A chat confirmation or a caller-provided decision alone has no
 authority.
+Swaps are stricter: the agent cannot start one without an owner-signed on-chain
+intent, so a prompt-injected or mistaken model cannot trade, change the amounts, or
+keep the proceeds. What this does not protect: the owner key lives in the Sui CLI
+keystore on the same machine, and the UI's Approve button signs with it, so anyone
+with access to this machine and a local browser session can approve. A wallet-signed
+approval (browser wallet) would remove that. `min_out` is the only price protection:
+there is no oracle, so an owner who approves a poor price gets a poor price.
+
 
 An approval file contains these fields:
 
@@ -214,3 +266,5 @@ The deterministic policy and durable proposal workflow are dependencies of
 the signer integration. This branch defines the approval record contract.
 Execution fails closed until a trusted producer publishes an approval.
 `npm test` exercises the contract through a local signer with a fixture key.
+
+Swap MCP tools never load a private key: vault_swap prepares unsigned bytes (or simulates). On-chain owner approval and the signer’s separate byte-bound policy approval are both required. Preparation does not mark a proposal executed; confirm the execution digest and on-chain intent state before retrying.

@@ -1,10 +1,17 @@
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
-import { normalizeSuiAddress, SUI_DECIMALS, SUI_SYSTEM_STATE_OBJECT_ID, toHex } from "@mysten/sui/utils";
+import {
+  normalizeStructTag,
+  normalizeSuiAddress,
+  SUI_DECIMALS,
+  SUI_SYSTEM_STATE_OBJECT_ID,
+  toHex,
+} from "@mysten/sui/utils";
 import { assertTestnet, explorerTxUrl, vaultConfig, type VaultConfig } from "../config.js";
 import { formatUnits } from "./balance.js";
 import type { SuiNetwork } from "./client.js";
+import { formatAmount, getCoinInfo } from "./coins.js";
 import { netGasMist } from "./transfer.js";
 import type { TransferReceipt } from "./types.js";
 import { requireAddress } from "./address.js";
@@ -19,6 +26,28 @@ export interface StakePosition {
   activationEpoch: string;
 }
 
+/** Coins in the vault's trading sleeve: the only funds the agent can swap. */
+export interface TradingBalance {
+  coinType: string;
+  symbol: string;
+  decimals: number;
+  raw: bigint;
+}
+
+/** An owner-approved trade waiting for the agent to execute it. */
+export interface IntentInfo {
+  intentId: string;
+  inType: string;
+  outType: string;
+  inSymbol: string;
+  outSymbol: string;
+  inDecimals: number;
+  outDecimals: number;
+  amountIn: bigint;
+  minOut: bigint;
+  expiryMs: number;
+}
+
 /** Current on-chain state of the spending vault. */
 export interface VaultStatus {
   vaultId: string;
@@ -30,6 +59,10 @@ export interface VaultStatus {
   allowedValidators: string[];
   /** Open staking positions held by the vault. */
   stakes: StakePosition[];
+  /** Per-coin balances the owner has allocated for the agent to swap. */
+  trading: TradingBalance[];
+  /** Owner-approved trades the agent may still execute. */
+  intents: IntentInfo[];
 }
 
 /** Move serializes u64 as a string and Balance<T> as either a string or { value }. */
@@ -53,7 +86,7 @@ export async function getVaultStatus(
   });
   const fields = object.json;
   if (!fields) throw new Error(`Vault ${config.vaultId} has no readable content.`);
-  const { allowedValidators, stakes } = await readVaultDynamicFields(client, config.vaultId);
+  const { allowedValidators, stakes, trading, intents } = await readVaultDynamicFields(client, config.vaultId);
   return {
     vaultId: config.vaultId,
     balanceMist: toBigInt(fields.balance, "balance"),
@@ -62,7 +95,31 @@ export async function getVaultStatus(
     paused: fields.paused === true,
     allowedValidators,
     stakes,
+    trading,
+    intents,
   };
+}
+
+/** Top-level generic arguments of a Move type: `A::m::S<X, B::m::T<Y>>` -> [X, B::m::T<Y>]. */
+export function typeArguments(type: string): string[] {
+  const start = type.indexOf("<");
+  const end = type.lastIndexOf(">");
+  if (start < 0 || end < start) return [];
+  const args: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const char of type.slice(start + 1, end)) {
+    if (char === "<") depth += 1;
+    if (char === ">") depth -= 1;
+    if (char === "," && depth === 0) {
+      args.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) args.push(current.trim());
+  return args.map((arg) => normalizeStructTag(arg));
 }
 
 /**
@@ -72,6 +129,8 @@ export async function getVaultStatus(
 async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   const allowedValidators: string[] = [];
   const stakedSuiIds: string[] = [];
+  const tradingFields: { fieldId: string; coinType: string }[] = [];
+  const intentIds: string[] = [];
 
   let cursor: string | null = null;
   do {
@@ -85,6 +144,11 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
         allowedValidators.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
       } else if (entry.$kind === "DynamicObject" && entry.name.type.includes("::spending_vault::StakeKey")) {
         stakedSuiIds.push(entry.childId);
+      } else if (entry.$kind === "DynamicField" && entry.name.type.includes("::spending_vault::TradingKey<")) {
+        const [coinType] = typeArguments(entry.name.type);
+        if (coinType) tradingFields.push({ fieldId: entry.fieldId, coinType });
+      } else if (entry.$kind === "DynamicObject" && entry.name.type.includes("::spending_vault::IntentKey")) {
+        intentIds.push(entry.childId);
       }
     }
     cursor = page.hasNextPage ? page.cursor : null;
@@ -102,7 +166,43 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
       });
     }
   }
-  return { allowedValidators, stakes };
+
+  const trading: TradingBalance[] = [];
+  if (tradingFields.length > 0) {
+    const { objects } = await client.getObjects({
+      objectIds: tradingFields.map((field) => field.fieldId),
+      include: { json: true },
+    });
+    for (const [index, object] of objects.entries()) {
+      if (object instanceof Error || !object.json) continue;
+      const info = await getCoinInfo(client, tradingFields[index]!.coinType);
+      trading.push({ ...info, raw: toBigInt(object.json.value, "trading balance") });
+    }
+  }
+
+  const intents: IntentInfo[] = [];
+  if (intentIds.length > 0) {
+    const { objects } = await client.getObjects({ objectIds: intentIds, include: { json: true } });
+    for (const object of objects) {
+      if (object instanceof Error || !object.json) continue;
+      const [inType, outType] = typeArguments(object.type);
+      if (!inType || !outType) continue;
+      const [inInfo, outInfo] = await Promise.all([getCoinInfo(client, inType), getCoinInfo(client, outType)]);
+      intents.push({
+        intentId: object.objectId,
+        inType,
+        outType,
+        inSymbol: inInfo.symbol,
+        outSymbol: outInfo.symbol,
+        inDecimals: inInfo.decimals,
+        outDecimals: outInfo.decimals,
+        amountIn: toBigInt(object.json.amount_in, "amount_in"),
+        minOut: toBigInt(object.json.min_out, "min_out"),
+        expiryMs: Number(toBigInt(object.json.expiry_ms, "expiry_ms")),
+      });
+    }
+  }
+  return { allowedValidators, stakes, trading, intents };
 }
 
 export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vaultConfig()): string {
@@ -118,6 +218,17 @@ export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vau
     status.stakes.length
       ? `Staked: ${status.stakes.map((s) => `${sui(s.principalMist)} (receipt ${s.stakedSuiId}, active from epoch ${s.activationEpoch})`).join("; ")}`
       : "Staked: nothing",
+    status.trading.length
+      ? `Trading sleeve (the only funds the agent can swap): ${status.trading.map((t) => formatAmount(t.raw, t)).join(", ")}`
+      : "Trading sleeve: empty (the owner has not allocated any funds for swaps)",
+    status.intents.length
+      ? `Approved trades waiting to run:\n${status.intents
+          .map(
+            (i) =>
+              `  - ${i.intentId}: sell ${formatAmount(i.amountIn, { decimals: i.inDecimals, symbol: i.inSymbol })} for at least ${formatAmount(i.minOut, { decimals: i.outDecimals, symbol: i.outSymbol })}, expires ${new Date(i.expiryMs).toISOString()}`,
+          )
+          .join("\n")}`
+      : "Approved trades waiting to run: none",
   ].join("\n");
 }
 

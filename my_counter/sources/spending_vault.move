@@ -13,6 +13,7 @@
 module my_counter::spending_vault;
 
 use sui::balance::Balance;
+use sui::clock::Clock;
 use sui::coin::{Self, Coin};
 use sui::dynamic_field as df;
 use sui::dynamic_object_field as dof;
@@ -29,6 +30,12 @@ const EInsufficientFunds: u64 = 3;
 const ERevoked: u64 = 4;
 const EValidatorNotAllowed: u64 = 5;
 const EStakeNotFound: u64 = 6;
+const EZeroAmount: u64 = 7;
+const EIntentNotFound: u64 = 8;
+const EIntentExpired: u64 = 9;
+const EInsufficientTrading: u64 = 10;
+const EBelowMinOut: u64 = 11;
+const EBadExpiry: u64 = 12;
 
 // === Objects ===
 
@@ -272,7 +279,242 @@ public fun stake(
     });
 }
 
+// === Trading: owner-approved swaps ===
+//
+// The agent can never trade on its own. The owner moves funds into a "trading sleeve"
+// (per-coin balances held by the vault) and posts an `Intent`: sell exactly `amount_in`
+// of `In` for at least `min_out` of `Out`, before `expiry_ms`. The agent can only
+// execute an existing intent, once, and picks only the route:
+//
+//   PTB: (coin_in, ticket) = begin_swap(..)  ->  <any DEX call>  ->  finish_swap(ticket, coin_out)
+//
+// `SwapTicket` has no abilities (a hot potato), so the transaction cannot end without
+// `finish_swap`, which checks the output against the owner's `min_out` and puts it back
+// into the vault. The agent never keeps the proceeds. The sleeve bounds the blast
+// radius: the agent can only ever trade what the owner allocated to it.
+
+/// Dynamic-field key: the vault's trading balance of coin type `T` (a `Balance<T>`).
+public struct TradingKey<phantom T> has copy, drop, store {}
+
+/// Dynamic-object-field key: an `Intent` held by the vault, found by its ID.
+public struct IntentKey has copy, drop, store {
+    intent_id: ID,
+}
+
+/// An owner-approved trade. Consumed when the agent executes it.
+public struct Intent<phantom In, phantom Out> has key, store {
+    id: UID,
+    amount_in: u64,
+    min_out: u64,
+    expiry_ms: u64,
+}
+
+/// Hot potato returned by `begin_swap`. Only `finish_swap` can consume it.
+public struct SwapTicket<phantom In, phantom Out> {
+    vault_id: ID,
+    intent_id: ID,
+    agent_cap_id: ID,
+    amount_in: u64,
+    min_out: u64,
+}
+
+public struct IntentCreated<phantom In, phantom Out> has copy, drop {
+    vault_id: ID,
+    intent_id: ID,
+    amount_in: u64,
+    min_out: u64,
+    expiry_ms: u64,
+}
+
+public struct IntentCancelled<phantom In, phantom Out> has copy, drop {
+    vault_id: ID,
+    intent_id: ID,
+}
+
+public struct Swapped<phantom In, phantom Out> has copy, drop {
+    vault_id: ID,
+    intent_id: ID,
+    agent_cap_id: ID,
+    amount_in: u64,
+    amount_out: u64,
+}
+
+// --- Owner: fund and manage the trading sleeve ---
+
+/// Move SUI from the vault's main balance into the trading sleeve.
+public fun allocate_sui_to_trading(cap: &OwnerCap, vault: &mut Vault, amount: u64) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    assert!(amount > 0, EZeroAmount);
+    assert!(vault.balance.value() >= amount, EInsufficientFunds);
+    let taken = vault.balance.split(amount);
+    trading_join<SUI>(vault, taken);
+}
+
+/// Move SUI from the trading sleeve back to the vault's main balance.
+public fun release_sui_from_trading(cap: &OwnerCap, vault: &mut Vault, amount: u64) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    assert!(amount > 0, EZeroAmount);
+    let taken = trading_split<SUI>(vault, amount);
+    vault.balance.join(taken);
+}
+
+/// Anyone can add any coin to the trading sleeve.
+public fun deposit_trading<T>(vault: &mut Vault, payment: Coin<T>) {
+    trading_join<T>(vault, coin::into_balance(payment));
+}
+
+/// Take coins back out of the trading sleeve to the owner.
+public fun withdraw_trading<T>(
+    cap: &OwnerCap,
+    vault: &mut Vault,
+    amount: u64,
+    ctx: &mut TxContext,
+) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    assert!(amount > 0, EZeroAmount);
+    let taken = trading_split<T>(vault, amount);
+    transfer::public_transfer(coin::from_balance(taken, ctx), ctx.sender());
+}
+
+/// Approve one trade: sell exactly `amount_in` of `In` for at least `min_out` of `Out`,
+/// executable by the agent until `expiry_ms`. Returns the intent's ID. Funds are not
+/// locked: if the sleeve is short when the agent executes, the swap fails.
+public fun create_intent<In, Out>(
+    cap: &OwnerCap,
+    vault: &mut Vault,
+    amount_in: u64,
+    min_out: u64,
+    expiry_ms: u64,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): ID {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    assert!(amount_in > 0, EZeroAmount);
+    assert!(min_out > 0, EZeroAmount);
+    assert!(expiry_ms > clock.timestamp_ms(), EBadExpiry);
+
+    let intent = Intent<In, Out> {
+        id: object::new(ctx),
+        amount_in,
+        min_out,
+        expiry_ms,
+    };
+    let intent_id = object::id(&intent);
+    dof::add(&mut vault.id, IntentKey { intent_id }, intent);
+
+    event::emit(IntentCreated<In, Out> {
+        vault_id: object::id(vault),
+        intent_id,
+        amount_in,
+        min_out,
+        expiry_ms,
+    });
+    intent_id
+}
+
+/// Withdraw approval for a trade. Nothing needs refunding: funds never left the sleeve.
+public fun cancel_intent<In, Out>(cap: &OwnerCap, vault: &mut Vault, intent_id: ID) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    let key = IntentKey { intent_id };
+    assert!(dof::exists_with_type<IntentKey, Intent<In, Out>>(&vault.id, key), EIntentNotFound);
+    let Intent { id, amount_in: _, min_out: _, expiry_ms: _ } =
+        dof::remove<IntentKey, Intent<In, Out>>(&mut vault.id, key);
+    id.delete();
+    event::emit(IntentCancelled<In, Out> { vault_id: object::id(vault), intent_id });
+}
+
+// --- Agent: execute an approved intent ---
+
+/// Start executing an approved intent. Consumes the intent and returns the coins to
+/// sell plus a ticket that must be handed to `finish_swap` in the same transaction.
+/// Rules: right vault, cap not revoked, vault not paused, intent exists with these
+/// coin types, not expired, and the sleeve holds enough.
+public fun begin_swap<In, Out>(
+    cap: &AgentCap,
+    vault: &mut Vault,
+    intent_id: ID,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): (Coin<In>, SwapTicket<In, Out>) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    assert!(cap.version == vault.agent_version, ERevoked);
+    assert!(!vault.paused, EPaused);
+
+    let key = IntentKey { intent_id };
+    assert!(dof::exists_with_type<IntentKey, Intent<In, Out>>(&vault.id, key), EIntentNotFound);
+    let Intent { id, amount_in, min_out, expiry_ms } =
+        dof::remove<IntentKey, Intent<In, Out>>(&mut vault.id, key);
+    id.delete();
+    assert!(clock.timestamp_ms() <= expiry_ms, EIntentExpired);
+
+    let coin_in = coin::from_balance(trading_split<In>(vault, amount_in), ctx);
+    let ticket = SwapTicket<In, Out> {
+        vault_id: object::id(vault),
+        intent_id,
+        agent_cap_id: object::id(cap),
+        amount_in,
+        min_out,
+    };
+    (coin_in, ticket)
+}
+
+/// Finish a swap: the output must be at least the intent's `min_out`, and it is
+/// deposited into the vault's trading sleeve. It must go back into the same vault
+/// the ticket came from.
+public fun finish_swap<In, Out>(
+    ticket: SwapTicket<In, Out>,
+    vault: &mut Vault,
+    coin_out: Coin<Out>,
+) {
+    let SwapTicket { vault_id, intent_id, agent_cap_id, amount_in, min_out } = ticket;
+    assert!(vault_id == object::id(vault), EWrongVault);
+    let amount_out = coin_out.value();
+    assert!(amount_out >= min_out, EBelowMinOut);
+    trading_join<Out>(vault, coin::into_balance(coin_out));
+
+    event::emit(Swapped<In, Out> {
+        vault_id,
+        intent_id,
+        agent_cap_id,
+        amount_in,
+        amount_out,
+    });
+}
+
+fun trading_join<T>(vault: &mut Vault, amount: Balance<T>) {
+    let key = TradingKey<T> {};
+    if (df::exists_with_type<TradingKey<T>, Balance<T>>(&vault.id, key)) {
+        let existing: &mut Balance<T> = df::borrow_mut(&mut vault.id, key);
+        existing.join(amount);
+    } else {
+        df::add(&mut vault.id, key, amount);
+    };
+}
+
+fun trading_split<T>(vault: &mut Vault, amount: u64): Balance<T> {
+    let key = TradingKey<T> {};
+    assert!(df::exists_with_type<TradingKey<T>, Balance<T>>(&vault.id, key), EInsufficientTrading);
+    let existing: &mut Balance<T> = df::borrow_mut(&mut vault.id, key);
+    assert!(existing.value() >= amount, EInsufficientTrading);
+    existing.split(amount)
+}
+
 // === Reads ===
+
+/// How much of coin type `T` the trading sleeve holds.
+public fun trading_balance<T>(vault: &Vault): u64 {
+    let key = TradingKey<T> {};
+    if (df::exists_with_type<TradingKey<T>, Balance<T>>(&vault.id, key)) {
+        let existing: &Balance<T> = df::borrow(&vault.id, key);
+        existing.value()
+    } else {
+        0
+    }
+}
+
+public fun has_intent(vault: &Vault, intent_id: ID): bool {
+    dof::exists(&vault.id, IntentKey { intent_id })
+}
 
 public fun is_validator_allowed(vault: &Vault, validator: address): bool {
     df::exists(&vault.id, AllowedValidator { validator })
@@ -547,5 +789,409 @@ fun test_allow_validator_with_other_vaults_cap_fails() {
     } else {
         allow_validator(&cap_b, &mut vault_b, VALIDATOR);
     };
+    abort 999
+}
+
+// --- Trading: owner-approved swaps. A mock "DEX" burns the input coin and mints the
+// output coin, which is all a real DEX looks like to the vault. ---
+
+#[test_only]
+use sui::clock;
+
+#[test_only]
+public struct USDC has drop {}
+#[test_only]
+public struct OTHER has drop {}
+
+#[test_only]
+const EXPIRY: u64 = 10_000;
+
+/// Owner funds the trading sleeve with `sleeve` SUI and posts an intent to sell
+/// `amount_in` SUI for at least `min_out` USDC (expiring at EXPIRY). Returns its ID.
+#[test_only]
+fun setup_intent(s: &mut ts::Scenario, sleeve: u64, amount_in: u64, min_out: u64): ID {
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    allocate_sui_to_trading(&owner_cap, &mut vault, sleeve);
+    let mut clk = clock::create_for_testing(s.ctx());
+    clk.set_for_testing(1_000);
+    let intent_id = create_intent<SUI, USDC>(&owner_cap, &mut vault, amount_in, min_out, EXPIRY, &clk, s.ctx());
+    clk.destroy_for_testing();
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+    intent_id
+}
+
+/// The agent executes `intent_id` at time `now_ms`; the mock DEX pays `out_amount` USDC.
+#[test_only]
+fun do_swap(s: &mut ts::Scenario, intent_id: ID, now_ms: u64, out_amount: u64) {
+    s.next_tx(AGENT);
+    let agent_cap = s.take_from_sender<AgentCap>();
+    let mut vault = s.take_shared<Vault>();
+    let mut clk = clock::create_for_testing(s.ctx());
+    clk.set_for_testing(now_ms);
+    let (coin_in, ticket) = begin_swap<SUI, USDC>(&agent_cap, &mut vault, intent_id, &clk, s.ctx());
+    let _ = coin_in.burn_for_testing();
+    let coin_out = coin::mint_for_testing<USDC>(out_amount, s.ctx());
+    finish_swap(ticket, &mut vault, coin_out);
+    clk.destroy_for_testing();
+    ts::return_shared(vault);
+    s.return_to_sender(agent_cap);
+}
+
+#[test]
+fun test_swap_happy_path() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+    do_swap(&mut s, intent_id, 2_000, 195);
+
+    s.next_tx(OWNER);
+    let vault = s.take_shared<Vault>();
+    assert!(trading_balance<SUI>(&vault) == 300);
+    assert!(trading_balance<USDC>(&vault) == 195);
+    assert!(vault.balance() == 500);
+    assert!(!has_intent(&vault, intent_id));
+    ts::return_shared(vault);
+    s.end();
+}
+
+#[test]
+fun test_swap_pays_exactly_min_out() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+    do_swap(&mut s, intent_id, EXPIRY, 190);
+
+    s.next_tx(OWNER);
+    let vault = s.take_shared<Vault>();
+    assert!(trading_balance<USDC>(&vault) == 190);
+    ts::return_shared(vault);
+    s.end();
+}
+
+#[test]
+fun test_swap_ignores_per_tx_limit() {
+    // The per-spend limit is 100 but the owner approved a 200 swap: the intent is the bound.
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 1);
+    do_swap(&mut s, intent_id, 2_000, 1);
+    s.end();
+}
+
+#[test, expected_failure(abort_code = EBelowMinOut)]
+fun test_swap_below_min_out_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+    do_swap(&mut s, intent_id, 2_000, 189);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EIntentExpired)]
+fun test_swap_after_expiry_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+    do_swap(&mut s, intent_id, EXPIRY + 1, 195);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EIntentNotFound)]
+fun test_swap_unknown_intent_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let _intent_id = setup_intent(&mut s, 500, 200, 190);
+    do_swap(&mut s, object::id_from_address(@0xDEAD), 2_000, 195);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EIntentNotFound)]
+fun test_intent_cannot_be_filled_twice() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+    do_swap(&mut s, intent_id, 2_000, 195);
+    do_swap(&mut s, intent_id, 2_000, 195);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EIntentNotFound)]
+fun test_swap_with_wrong_coin_types_fails() {
+    // The intent is SUI -> USDC; asking for SUI -> OTHER must not match it.
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+
+    s.next_tx(AGENT);
+    let agent_cap = s.take_from_sender<AgentCap>();
+    let mut vault = s.take_shared<Vault>();
+    let clk = clock::create_for_testing(s.ctx());
+    let (coin_in, ticket) = begin_swap<SUI, OTHER>(&agent_cap, &mut vault, intent_id, &clk, s.ctx());
+    let _ = coin_in.burn_for_testing();
+    finish_swap(ticket, &mut vault, coin::mint_for_testing<OTHER>(195, s.ctx()));
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EInsufficientTrading)]
+fun test_swap_with_short_sleeve_fails() {
+    // Intent sells 200 but the owner only allocated 150.
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 150, 200, 190);
+    do_swap(&mut s, intent_id, 2_000, 195);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EInsufficientTrading)]
+fun test_swap_with_empty_sleeve_fails() {
+    // Nothing allocated at all: the SUI trading balance does not even exist yet.
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    let clk = clock::create_for_testing(s.ctx());
+    let intent_id = create_intent<SUI, USDC>(&owner_cap, &mut vault, 10, 1, EXPIRY, &clk, s.ctx());
+    clk.destroy_for_testing();
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+
+    do_swap(&mut s, intent_id, 2_000, 5);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EPaused)]
+fun test_swap_while_paused_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    set_paused(&owner_cap, &mut vault, true);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+
+    do_swap(&mut s, intent_id, 2_000, 195);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = ERevoked)]
+fun test_swap_after_revoke_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    revoke_all_agents(&owner_cap, &mut vault);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+
+    do_swap(&mut s, intent_id, 2_000, 195);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EIntentNotFound)]
+fun test_cancelled_intent_cannot_be_filled() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    cancel_intent<SUI, USDC>(&owner_cap, &mut vault, intent_id);
+    assert!(!has_intent(&vault, intent_id));
+    // Cancelling moved nothing: the sleeve still holds everything.
+    assert!(trading_balance<SUI>(&vault) == 500);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+
+    do_swap(&mut s, intent_id, 2_000, 195);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EZeroAmount)]
+fun test_create_intent_with_zero_min_out_fails() {
+    // A zero floor would let the agent hand back nothing.
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let _ = setup_intent(&mut s, 500, 200, 0);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EZeroAmount)]
+fun test_create_intent_with_zero_amount_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let _ = setup_intent(&mut s, 500, 0, 1);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EBadExpiry)]
+fun test_create_intent_already_expired_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    let mut clk = clock::create_for_testing(s.ctx());
+    clk.set_for_testing(5_000);
+    create_intent<SUI, USDC>(&owner_cap, &mut vault, 10, 1, 5_000, &clk, s.ctx());
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EWrongVault)]
+fun test_create_intent_with_other_vaults_cap_fails() {
+    let mut s = ts::begin(OWNER);
+    create(100, s.ctx());
+    create(100, s.ctx());
+    s.next_tx(OWNER);
+
+    let mut vault_a = s.take_shared<Vault>();
+    let mut vault_b = s.take_shared<Vault>();
+    let cap_a = s.take_from_sender<OwnerCap>();
+    let cap_b = s.take_from_sender<OwnerCap>();
+    let clk = clock::create_for_testing(s.ctx());
+
+    if (cap_a.vault_id == object::id(&vault_a)) {
+        create_intent<SUI, USDC>(&cap_a, &mut vault_b, 10, 1, EXPIRY, &clk, s.ctx());
+    } else {
+        create_intent<SUI, USDC>(&cap_b, &mut vault_b, 10, 1, EXPIRY, &clk, s.ctx());
+    };
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EWrongVault)]
+fun test_finish_swap_into_other_vault_fails() {
+    // Take funds out of vault A, try to deposit the proceeds into vault B.
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 500, 200, 190);
+    s.next_tx(OWNER);
+    let vault_a = s.take_shared<Vault>();
+    let vault_a_id = object::id(&vault_a);
+    ts::return_shared(vault_a);
+
+    create(100, s.ctx());
+    s.next_tx(OWNER);
+    let vault_b_id = ts::most_recent_id_shared<Vault>().destroy_some();
+
+    s.next_tx(AGENT);
+    let agent_cap = s.take_from_sender<AgentCap>();
+    let mut vault_a = s.take_shared_by_id<Vault>(vault_a_id);
+    let mut vault_b = s.take_shared_by_id<Vault>(vault_b_id);
+    let clk = clock::create_for_testing(s.ctx());
+    let (coin_in, ticket) = begin_swap<SUI, USDC>(&agent_cap, &mut vault_a, intent_id, &clk, s.ctx());
+    let _ = coin_in.burn_for_testing();
+    finish_swap(ticket, &mut vault_b, coin::mint_for_testing<USDC>(195, s.ctx()));
+    abort 999
+}
+
+#[test]
+fun test_round_trip_requires_profit_when_min_out_exceeds_input() {
+    // In == Out: the "swap" only succeeds if it ends with at least min_out.
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    allocate_sui_to_trading(&owner_cap, &mut vault, 500);
+    let mut clk = clock::create_for_testing(s.ctx());
+    clk.set_for_testing(1_000);
+    let intent_id = create_intent<SUI, SUI>(&owner_cap, &mut vault, 200, 205, EXPIRY, &clk, s.ctx());
+    clk.destroy_for_testing();
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+
+    s.next_tx(AGENT);
+    let agent_cap = s.take_from_sender<AgentCap>();
+    let mut vault = s.take_shared<Vault>();
+    let clk = clock::create_for_testing(s.ctx());
+    let (mut coin_in, ticket) = begin_swap<SUI, SUI>(&agent_cap, &mut vault, intent_id, &clk, s.ctx());
+    // Pretend the route earned 5 extra SUI.
+    coin_in.join(coin::mint_for_testing<SUI>(5, s.ctx()));
+    finish_swap(ticket, &mut vault, coin_in);
+    assert!(trading_balance<SUI>(&vault) == 505);
+    clk.destroy_for_testing();
+    ts::return_shared(vault);
+    s.return_to_sender(agent_cap);
+    s.end();
+}
+
+// --- Sleeve management ---
+
+#[test]
+fun test_owner_moves_sui_in_and_out_of_sleeve() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    allocate_sui_to_trading(&owner_cap, &mut vault, 400);
+    assert!(vault.balance() == 600);
+    assert!(trading_balance<SUI>(&vault) == 400);
+    release_sui_from_trading(&owner_cap, &mut vault, 150);
+    assert!(vault.balance() == 750);
+    assert!(trading_balance<SUI>(&vault) == 250);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+    s.end();
+}
+
+#[test]
+fun test_owner_withdraws_from_sleeve() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    deposit_trading<USDC>(&mut vault, coin::mint_for_testing<USDC>(300, s.ctx()));
+    assert!(trading_balance<USDC>(&vault) == 300);
+    withdraw_trading<USDC>(&owner_cap, &mut vault, 120, s.ctx());
+    assert!(trading_balance<USDC>(&vault) == 180);
+    ts::return_shared(vault);
+    s.return_to_sender(owner_cap);
+
+    s.next_tx(OWNER);
+    let received = s.take_from_sender<Coin<USDC>>();
+    assert!(received.value() == 120);
+    s.return_to_sender(received);
+    s.end();
+}
+
+#[test, expected_failure(abort_code = EInsufficientFunds)]
+fun test_allocate_more_than_main_balance_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    allocate_sui_to_trading(&owner_cap, &mut vault, 1_001);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = EInsufficientTrading)]
+fun test_withdraw_more_than_sleeve_fails() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+
+    s.next_tx(OWNER);
+    let owner_cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    deposit_trading<USDC>(&mut vault, coin::mint_for_testing<USDC>(10, s.ctx()));
+    withdraw_trading<USDC>(&owner_cap, &mut vault, 11, s.ctx());
     abort 999
 }
