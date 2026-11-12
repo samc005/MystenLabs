@@ -53,11 +53,12 @@ export interface VaultConfig {
  * Testnet deployment of my_counter::spending_vault. These are public on-chain IDs,
  * not secrets. Override with SUI_VAULT_PACKAGE_ID, SUI_VAULT_ID, SUI_VAULT_AGENT_CAP_ID.
  *
- * packageId is the latest upgrade (v2, adds staking). Move calls must target the version
- * that has the function; the vault and caps keep their original IDs across upgrades.
+ * packageId is the latest upgrade (v3, adds owner-approved swaps; v2 added staking). Move
+ * calls must target the version that has the function; the vault and caps keep their
+ * original IDs across upgrades.
  */
 const DEFAULT_VAULT: VaultConfig = {
-  packageId: "0x495ab03ab692995629a16b09e63fe8c35ae8242378aab7a9dbab8d93522e6191",
+  packageId: "0xfa4f3640db523d284f784cb930a9efa36fe83b4d548e91c2d0c5ebc702928bab",
   vaultId: "0xed4a0431aed6b0ff544dbfa7796fc57df573754978be85d0d4651a2f60100832",
   agentCapId: "0xcacfc4e834d9ea96aacb799843c88ebd0da5be3859744f9ac262b0828e21828d",
 };
@@ -98,6 +99,41 @@ const KNOWN_COINS: KnownCoin[] = [
 export function knownCoin(type: string): KnownCoin | undefined {
   const normalized = normalizeStructTag(type);
   return KNOWN_COINS.find((coin) => normalizeStructTag(coin.type) === normalized);
+}
+
+export interface TradingConfig {
+  /** Package of the testnet mock pool (testnet_pool::test_usdc). */
+  poolPackageId: string;
+  /** Shared Pool object that quotes SUI <-> TEST_USDC at an owner-set price. */
+  poolId: string;
+  /** Full type of the pool's TEST_USDC coin. */
+  usdcType: string;
+}
+
+/**
+ * Testnet mock DEX used to exercise vault swaps without relying on real liquidity.
+ * Public on-chain IDs. Override with SUI_POOL_PACKAGE_ID, SUI_POOL_ID.
+ */
+const DEFAULT_TRADING = {
+  poolPackageId: "0x9ce5995a4f4962e4091aa89da0197fd06b972cebc82593ca41624d37392186a4",
+  poolId: "0x74f3ded415c90d624679063d7ae523278fd1b014eff74d28783f9d998e515ac9",
+};
+
+export function tradingConfig(): TradingConfig {
+  const poolPackageId = process.env.SUI_POOL_PACKAGE_ID ?? DEFAULT_TRADING.poolPackageId;
+  return {
+    poolPackageId,
+    poolId: process.env.SUI_POOL_ID ?? DEFAULT_TRADING.poolId,
+    usdcType: `${poolPackageId}::test_usdc::TEST_USDC`,
+  };
+}
+
+/**
+ * Trade proposals made through chat live here as one JSON file each, so the MCP server
+ * (a fresh process per chat turn), the UI, and the owner script all see the same state.
+ */
+export function proposalsDir(): string {
+  return process.env.SUI_PROPOSALS_DIR ?? join(PACKAGE_ROOT, ".proposals");
 }
 
 export function explorerTxUrl(network: SuiNetwork, digest: string): string {

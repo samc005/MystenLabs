@@ -1,0 +1,5 @@
+[package]
+name = "testnet_pool"
+edition = "2024"
+
+[dependencies]

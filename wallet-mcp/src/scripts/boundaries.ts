@@ -7,10 +7,15 @@
  *
  *   npm run boundaries
  *   npm run boundaries -- --expect-paused   (run while the owner has paused the vault)
+ *   npm run boundaries -- --live-intent     (also signs two cheap owner transactions: creates an
+ *                                            intent with an impossible price floor, then cancels it)
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { parseToMist, SUI_SYSTEM_STATE_OBJECT_ID } from "@mysten/sui/utils";
 import { createSuiClient } from "../blockchain/client.js";
+import { cancelIntent, createIntent, loadOwnerContext } from "../blockchain/owner.js";
+import { getDex } from "../blockchain/dex.js";
+import { resolveCoinType } from "../blockchain/coins.js";
 import { getVaultStatus } from "../blockchain/vault.js";
 import { requireWallet } from "../blockchain/wallet.js";
 import { resolveNetwork, vaultConfig } from "../config.js";
@@ -23,6 +28,12 @@ const ABORT_NAMES: Record<string, string> = {
   "4": "ERevoked",
   "5": "EValidatorNotAllowed",
   "6": "EStakeNotFound",
+  "7": "EZeroAmount",
+  "8": "EIntentNotFound",
+  "9": "EIntentExpired",
+  "10": "EInsufficientTrading",
+  "11": "EBelowMinOut",
+  "12": "EBadExpiry",
 };
 
 /** An address that is not on the allowlist (Mysten-4 on testnet; any non-allowed address works). */
@@ -218,6 +229,86 @@ async function main() {
     "rejected",
     "a leaked cap ID is useless without the agent's key",
   );
+
+  console.log("\n--- Swaps: the agent bypassing every client-side check ---");
+  const SUI = resolveCoinType("sui");
+  const USDC = resolveCoinType("usdc");
+  const swapPtb = (tx: Transaction, intentId: string) => {
+    const typeArguments = [SUI, USDC];
+    const [coinIn, ticket] = tx.moveCall({
+      target: target("begin_swap"),
+      typeArguments,
+      arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.id(intentId), tx.object.clock()],
+    });
+    const coinOut = getDex().addSwap(tx, coinIn!, SUI, USDC);
+    tx.moveCall({ target: target("finish_swap"), typeArguments, arguments: [ticket!, tx.object(config.vaultId), coinOut] });
+  };
+  report(
+    "Run a trade the owner never approved (made-up intent ID)",
+    "contract",
+    await simulate(agent, (tx) => swapPtb(tx, "0x00000000000000000000000000000000000000000000000000000000000dead1")),
+    "rejected",
+    "with no on-chain intent the agent cannot take a single coin out of the trading sleeve",
+  );
+  const swapOwnerOnly: Array<[string, (tx: Transaction) => void]> = [
+    [
+      "Approve its own trade: create_intent with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("create_intent"),
+          typeArguments: [SUI, USDC],
+          arguments: [
+            tx.object(config.agentCapId),
+            tx.object(config.vaultId),
+            tx.pure.u64(1),
+            tx.pure.u64(1),
+            tx.pure.u64(Date.now() + 600_000),
+            tx.object.clock(),
+          ],
+        }),
+    ],
+    [
+      "Move funds into the trading sleeve with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("allocate_sui_to_trading"),
+          arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.u64(1)],
+        }),
+    ],
+    [
+      "Withdraw from the trading sleeve with the AgentCap",
+      (tx) =>
+        tx.moveCall({
+          target: target("withdraw_trading"),
+          typeArguments: [SUI],
+          arguments: [tx.object(config.agentCapId), tx.object(config.vaultId), tx.pure.u64(1)],
+        }),
+    ],
+  ];
+  for (const [name, build] of swapOwnerOnly) {
+    report(name, "Move type system", await simulate(agent, build), "rejected");
+  }
+
+  if (process.argv.includes("--live-intent")) {
+    console.log("\n--- Live: the owner's price floor (signs two small owner transactions) ---");
+    const ctx = await loadOwnerContext(client, network);
+    const created = await createIntent(ctx, { inType: SUI, outType: USDC, amountIn: parseToMist("0.01"), minOut: 1_000_000_000n, ttlMs: 120_000 });
+    console.log(`      created intent ${created.intentId} (sell 0.01 SUI, demand 1000 tUSDC: far above the pool's price)`);
+    try {
+      report(
+        "Execute an approved trade that returns less than the owner's minimum",
+        "contract",
+        await simulate(agent, (tx) => swapPtb(tx, created.intentId)),
+        "rejected",
+        "the intent is real and open, the pool swap works, but finish_swap refuses output below min_out",
+      );
+    } finally {
+      await cancelIntent(ctx, created.intentId);
+      console.log(`      cancelled intent ${created.intentId}`);
+    }
+  } else {
+    console.log("SKIP  owner price-floor check (run with --live-intent to include it)");
+  }
 
   console.log("\n--- Known gap, expected to succeed today ---");
   report(
