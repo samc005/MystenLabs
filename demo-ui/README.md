@@ -63,3 +63,7 @@ How it works:
 1. In Vercel, choose **Add New → Project** and import this GitHub repo.
 2. Set **Root Directory** to `demo-ui`. Keep the default Next.js settings.
 3. Deploy. No environment variables are needed. Only the browser wallet works there; the chat page explains that it is local only.
+
+## Authenticated wallet workflow
+
+See [setup, supported intents, trust boundaries, and verification](../docs/authenticated-workflow.md). The chat authenticates requests with passkeys and asks for separate confirmation before signing server-prepared transactions. Run npm test for policy and authorization regression tests.

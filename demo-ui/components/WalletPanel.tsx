@@ -88,7 +88,7 @@ export function WalletPanel({ wallets, status, loading, onRefresh }: Props) {
           <li className={status.installed ? "pass" : "fail"}>wallet-mcp dependencies installed</li>
           <li className={status.built ? "pass" : "fail"}>wallet-mcp MCP server built</li>
           <li className={status.apiKey ? "pass" : "fail"}>
-            ANTHROPIC_API_KEY set {status.apiKey ? "" : "(add it to demo-ui/.env.local)"}
+            Natural-language translation {status.apiKey ? "configured" : "needs ANTHROPIC_API_KEY; explicit commands still work"}
           </li>
         </ul>
       )}

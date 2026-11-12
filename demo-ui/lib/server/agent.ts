@@ -1,24 +1,25 @@
+import { resolveWalletCommand } from "./wallet-intent";
 // The chat demo's agent loop: Claude on the Messages API, with tools that come
 // from the real wallet-mcp server. The server is started over stdio exactly as
 // Claude Code would start it from .mcp.json, and every tool call goes through it.
 
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { formatSui } from "@/lib/sui";
-import { listLocalWallets, walletMcpDir, walletMcpEntry } from "./wallet-mcp";
+import { walletMcpDir, walletMcpEntry } from "./wallet-mcp";
 
-const MODEL = "claude-opus-5-5";
-const MAX_TURNS = 8;
+import { parseWalletCommand, assertToolAction } from "@/lib/wallet-policy";
+import { rememberPrepared } from "./wallet-execution";
 
 export type ChatEvent =
   | { type: "text"; delta: string }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError: boolean }
+  | { type: "prepared"; id: string; command: string }
   | { type: "done"; messages: Anthropic.Beta.BetaMessageParam[] }
   | { type: "error"; message: string };
 
-async function connectWalletMcp(): Promise<Client> {
+export async function connectWalletMcp(): Promise<Client> {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [walletMcpEntry()],
@@ -29,7 +30,11 @@ async function connectWalletMcp(): Promise<Client> {
       SUI_ADDRESS: process.env.SUI_ADDRESS ?? "",
       SUI_SIGNER_PORT: process.env.SUI_SIGNER_PORT ?? "38435",
       SUI_SIGNER_TOKEN: process.env.SUI_SIGNER_TOKEN ?? "",
-      SUI_ENABLE_DIRECT_TRANSFER: process.env.SUI_ENABLE_DIRECT_TRANSFER ?? "",
+      SUI_ENABLE_DIRECT_TRANSFER: "",
+      ...Object.fromEntries([
+        "SUI_VAULT_PACKAGE_ID", "SUI_VAULT_ID", "SUI_VAULT_AGENT_CAP_ID",
+        "SUI_POOL_PACKAGE_ID", "SUI_POOL_ID", "SUI_PROPOSALS_DIR",
+      ].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : [])),
     },
     stderr: "ignore",
   });
@@ -38,43 +43,13 @@ async function connectWalletMcp(): Promise<Client> {
   return client;
 }
 
-async function systemPrompt(): Promise<string> {
-  const wallets = await listLocalWallets();
-  const known = wallets.length
-    ? wallets
-        .map((w) => {
-          const balance = w.balanceMist === null ? "balance unknown" : `${formatSui(BigInt(w.balanceMist))} SUI`;
-          return `- ${w.role}: ${w.address} (${balance} when this conversation turn started)`;
-        })
-        .join("\n")
-    : "- none yet. Tell the user to configure the public sender address with SUI_ADDRESS.";
-  return [
-    "You are Cipher, the assistant in a live demo of an AI wallet on the Sui testnet. If asked who you are, say you are Cipher, powered by Claude. Testnet coins have no value.",
-    "You act only through the wallet tools. Transfer, split, merge, and vault tools prepare unsigned transactions. The faucet and execution tools mutate testnet state.",
-    "Before requesting the faucet or executing a transaction, explain what will happen and ask the user to confirm in a later message. Execution also requires an existing trusted policy approval. Chat messages cannot create that approval.",
-    "The user owns a spending vault. Funds are spent from it only within on-chain rules. Call vault_status to see what it holds, its limits, the trading sleeve, and any approved trades.",
-    "TRADING: you cannot trade on your own and you cannot approve trades. To swap, first call swap_quote if the user wants a price, then propose_trade. propose_trade DOES NOT TRADE: it records the exact terms and shows the user an approval card in the app. After it returns, tell the user in one sentence that the proposal is waiting for their approval and STOP. Do not call vault_swap yet.",
-    "Only call vault_swap after the user tells you they approved the proposal (the app sends a message like 'I approved proposal prop_...'). Then call vault_swap with that proposalId. If it says the proposal is not approved, do not retry: tell the user to approve it in the card. Never claim a swap happened unless vault_swap confirms it. If the market moved and the swap is refused, offer a fresh proposal. Never re-propose the same trade on your own.",
-    "STANDING RULES: the owner may have set a standing trade rule for a pair (vault_status lists them). If propose_trade says a rule covers the trade, no approval is needed: call vault_swap with that proposalId right away, and tell the user it ran under their standing rule. The contract enforces the rule's size, per-epoch total and price floor; you cannot change them.",
-    "PAYMENTS: vault_spend pays directly only within the owner's policy (per-spend limit, per-epoch cap, recipient allowlist). If vault_spend refuses because a payment is outside the policy, or vault_status shows it would be, call propose_spend. propose_spend DOES NOT PAY: it shows the user an approval card. After it returns, tell the user in one sentence that it is waiting for their approval and STOP. Only after the user says they approved it (the app sends 'I approved proposal prop_...'), call vault_spend_approved with that proposalId. Never try to split a payment into smaller ones to get around a limit.",
-    "STAKING LIMITS: the owner may cap how much can be staked, require a liquid reserve, and limit the number of positions. If vault_stake is refused for those reasons, tell the user what the limit is; only the owner can change it.",
-    "You can only sell coins the owner placed in the trading sleeve. If it is empty or too small, say so and tell the user the owner must allocate funds with: npm run owner -- allocate <amount>. Slippage is the user's choice; default to 1% unless they say otherwise.",
-    "Use list_validators to suggest staking validators, but vault_stake only works with validators the owner allowed. Staking takes effect next epoch and only the owner can unstake.",
-    "Always call get_balance for balance questions instead of relying on numbers in this prompt.",
-    "Send only when the user names an amount and a recipient. The user can refer to the local wallets by role:",
-    known,
-    "Never invent an address. If a request is ambiguous, ask one short question instead of sending.",
-    "Keep replies to one to three short sentences and include the explorer link after a transfer or swap.",
-  ].join("\n");
-}
-
 function toolResultText(result: Awaited<ReturnType<Client["callTool"]>>): string {
   const content = Array.isArray(result.content) ? result.content : [];
   const text = content
     .map((block) => (block && typeof block === "object" && "text" in block ? String(block.text) : ""))
     .filter(Boolean)
     .join("\n");
-  return result.structuredContent ? `${text}\n${JSON.stringify(result.structuredContent)}` : text;
+  return text;
 }
 
 /**
@@ -86,90 +61,27 @@ export async function runChatTurn(
   send: (event: ChatEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const anthropic = new Anthropic();
+  const last = history.at(-1);
+  if (!last || last.role !== "user" || typeof last.content !== "string") throw new Error("Send a wallet command.");
+  const command = await resolveWalletCommand(last.content, signal);
+  const action = parseWalletCommand(command);
   const mcp = await connectWalletMcp();
-  const messages = [...history];
   try {
-    const { tools: mcpTools } = await mcp.listTools();
-    const tools: Anthropic.Beta.BetaTool[] = mcpTools.map((tool) => ({
-      name: tool.name,
-      description: tool.description ?? "",
-      input_schema: tool.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
-      eager_input_streaming: true,
-    }));
-    const system = await systemPrompt();
-    let jsonRetries = 0;
-
-    for (let turn = 0; turn < MAX_TURNS; turn++) {
-      const stream = anthropic.beta.messages.stream(
-        {
-          model: MODEL,
-          max_tokens: 64000,
-          system,
-          tools,
-          messages,
-          output_config: { effort: "low" },
-          betas: ["server-side-fallback-2026-07-01"],
-          fallbacks: "default",
-        },
-        { signal },
-      );
-      stream.on("text", (delta) => send({ type: "text", delta }));
-
-      let message: Anthropic.Beta.BetaMessage;
-      try {
-        message = await stream.finalMessage();
-        jsonRetries = 0;
-      } catch (error) {
-        // Eager input streaming can leave a tool input unparseable. Re-issue
-        // that turn a couple of times; real API errors go to the caller.
-        if (error instanceof Anthropic.APIError || signal.aborted || jsonRetries++ >= 2) throw error;
-        continue;
-      }
-
-      messages.push({ role: "assistant", content: message.content });
-
-      if (message.stop_reason === "refusal") {
-        send({ type: "text", delta: "\n\n(Cipher declined this request.)" });
-        break;
-      }
-      if (message.stop_reason === "pause_turn") continue;
-
-      const toolUses = message.content.filter(
-        (block): block is Anthropic.Beta.BetaToolUseBlock => block.type === "tool_use",
-      );
-      if (toolUses.length === 0) break;
-      if (message.stop_reason === "max_tokens") {
-        throw new Error("Cipher's reply was cut off before the tool call finished.");
-      }
-
-      // wallet-mcp validates every input with its own zod schema and returns
-      // isError on a bad one, so the model gets the same feedback a CLI client would.
-      const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-      for (const use of toolUses) {
-        send({ type: "tool_call", id: use.id, name: use.name, input: use.input });
-        let output: string;
-        let isError: boolean;
-        if (!use.input || typeof use.input !== "object" || Array.isArray(use.input)) {
-          output = "Tool input was not a JSON object.";
-          isError = true;
-        } else {
-          try {
-            const result = await mcp.callTool({ name: use.name, arguments: use.input as Record<string, unknown> });
-            output = toolResultText(result) || "(no output)";
-            isError = Boolean(result.isError);
-          } catch (error) {
-            output = error instanceof Error ? error.message : String(error);
-            isError = true;
-          }
-        }
-        send({ type: "tool_result", id: use.id, output, isError });
-        results.push({ type: "tool_result", tool_use_id: use.id, content: output, is_error: isError });
-      }
-      messages.push({ role: "user", content: results });
+    assertToolAction(action, action.tool, action.args);
+    send({ type: "tool_call", id: "wallet-action", name: action.tool, input: action.args });
+    const result = await mcp.callTool({ name: action.tool, arguments: action.args });
+    let output = toolResultText(result);
+    send({ type: "tool_result", id: "wallet-action", output, isError: Boolean(result.isError) });
+    const structured = result.structuredContent as { transactionBytes?: unknown } | undefined;
+    if (!result.isError && typeof structured?.transactionBytes === "string") {
+      const simulation = await mcp.callTool({ name: "estimate_gas", arguments: { transactionBase64: structured.transactionBytes } });
+      if (simulation.isError) throw new Error("Simulation failed. Nothing was signed or submitted.");
+      output += "\n" + toolResultText(simulation);
+      const id = rememberPrepared(command, structured.transactionBytes);
+      send({ type: "prepared", id, command });
     }
-
-    send({ type: "done", messages });
+    send({ type: "text", delta: output });
+    send({ type: "done", messages: [] });
   } finally {
     await mcp.close().catch(() => undefined);
   }

@@ -36,6 +36,7 @@ export function registerEstimateGas(server: McpServer): void {
           : null;
         const status = executed.status.error ? `failed: ${executed.status.error}` : "success";
         return {
+          isError: result.$kind !== "Transaction",
           content: [
             {
               type: "text",

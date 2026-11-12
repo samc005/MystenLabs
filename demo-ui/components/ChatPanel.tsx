@@ -4,6 +4,8 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { readNdjson } from "@/lib/ndjson";
 import type { ChatEvent } from "@/lib/server/agent";
+import { approveProposal, getPasskeyStatus, hashProposal, registerPasskey } from "@/lib/passkey";
+import { isSpendProposal } from "@/lib/proposals";
 import { ProposalCard } from "./ProposalCard";
 
 type Item =
@@ -14,9 +16,9 @@ type Item =
 
 const SUGGESTIONS = [
   "What's my balance?",
-  "What's in the vault, and what can you trade?",
-  "Swap 0.05 SUI to tUSDC",
-  "Which validators could we stake with?",
+  "vault status",
+  "balance",
+  "validators",
 ];
 
 const PROPOSAL_ID = /Proposal ID: (prop_[0-9a-f]{10})/;
@@ -30,6 +32,7 @@ export function ChatPanel({ onToolResult }: Props) {
   const [items, setItems] = useState<Item[]>([]);
   const [history, setHistory] = useState<Anthropic.Beta.BetaMessageParam[]>([]);
   const [input, setInput] = useState("");
+  const [prepared, setPrepared] = useState<{ id: string; command: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -74,10 +77,12 @@ export function ChatPanel({ onToolResult }: Props) {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
+      if (!(await getPasskeyStatus()).registered) await registerPasskey();
+      const { approvalId } = await approveProposal(await hashProposal({ action: "wallet-command", command: prompt }));
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages }),
+        body: JSON.stringify({ messages, approvalId }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -86,6 +91,9 @@ export function ChatPanel({ onToolResult }: Props) {
       }
       await readNdjson<ChatEvent>(response, (event) => {
         switch (event.type) {
+          case "prepared":
+            setPrepared({ id: event.id, command: event.command });
+            break;
           case "text":
             appendText(event.delta);
             break;
@@ -118,7 +126,26 @@ export function ChatPanel({ onToolResult }: Props) {
     }
   }
 
+  async function execute() {
+    if (!prepared || busy) return;
+    setBusy(true);
+    try {
+      const { approvalId } = await approveProposal(await hashProposal({ action: "execute-wallet-command", ...prepared }));
+      const response = await fetch("/api/wallet/execute", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: prepared.id, approvalId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? JSON.stringify(result.content));
+      appendText(JSON.stringify(result.content));
+      onToolResult();
+    } catch (error) {
+      setItems(previous => [...previous, { kind: "error", text: String(error) }]);
+    } finally { setPrepared(null); setBusy(false); }
+  }
+
   function reset() {
+    setPrepared(null);
     abortRef.current?.abort();
     setItems([]);
     setHistory([]);
@@ -133,10 +160,15 @@ export function ChatPanel({ onToolResult }: Props) {
         </button>
       </div>
 
+      {prepared && <div className="card">
+        <p>Confirm testnet transaction: {prepared.command}</p>
+        <button onClick={execute} disabled={busy}>Approve with passkey and execute</button>
+        <button onClick={() => setPrepared(null)} disabled={busy}>Cancel</button>
+      </div>}
       <div className="chat-log" ref={scrollRef}>
         {items.length === 0 && (
           <div className="chat-empty">
-            <p className="muted">Ask in plain English. Cipher can only act through the wallet-mcp tools.</p>
+            <p className="muted">Ask for one wallet action. Confirm the exact transaction before spending.</p>
             <div className="suggestions">
               {SUGGESTIONS.map((s) => (
                 <button key={s} className="secondary small-btn" onClick={() => send(s)} disabled={busy}>
@@ -167,8 +199,8 @@ export function ChatPanel({ onToolResult }: Props) {
               {proposalId && (
                 <ProposalCard
                   id={proposalId}
-                  onApproved={() => followUp(`I approved proposal ${proposalId}. Please run it now.`)}
-                  onRejected={() => followUp(`I rejected proposal ${proposalId}. Do not run it.`)}
+                  onApproved={(p) => followUp("execute " + (isSpendProposal(p) ? "payment " : "swap ") + p.id)}
+                  onRejected={() => appendText("Proposal rejected. Nothing executed.")}
                 />
               )}
             </Fragment>
