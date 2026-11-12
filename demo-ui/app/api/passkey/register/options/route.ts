@@ -8,7 +8,8 @@ export async function POST(request: Request) {
   const rejected = rejectNonLocal(request);
   if (rejected) return rejected;
   try {
-    return Response.json(await registrationOptions(request));
+    const body = (await request.json()) as { approvalId?: string };
+    return Response.json(await registrationOptions(request, body.approvalId));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }

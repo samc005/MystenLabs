@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -33,6 +33,7 @@ type Store = {
 type Challenge = {
   value: string;
   kind: "registration" | "authentication";
+  enrollmentAuthorized?: boolean;
   proposalHash?: string;
   expiresAt: number;
 };
@@ -111,9 +112,15 @@ export async function passkeyStatus(): Promise<{ registered: boolean; credential
   return { registered: store.credentials.length > 0, credentialCount: store.credentials.length, revoked: store.revoked };
 }
 
-export async function registrationOptions(request: Request) {
+export async function registrationOptions(request: Request, approvalId?: string) {
   const { rpID } = requestContext(request);
   const store = await loadStore();
+  const enrollmentAuthorized = store.credentials.length > 0;
+  if (enrollmentAuthorized) {
+    if (!approvalId) throw new Error("An existing passkey must approve adding a device.");
+    const hash = createHash("sha256").update(JSON.stringify({ action: "register-passkey", network: "testnet" })).digest("hex");
+    await consumeApproval(approvalId, hash);
+  }
   const challengeId = randomUUID();
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
@@ -131,6 +138,7 @@ export async function registrationOptions(request: Request) {
   rememberChallenge(challengeId, {
     value: options.challenge,
     kind: "registration",
+    enrollmentAuthorized,
     expiresAt: Date.now() + CHALLENGE_TTL_MS,
   });
   return { challengeId, options };
@@ -153,6 +161,9 @@ export async function verifyRegistration(
   if (!result.verified) throw new Error("Passkey registration could not be verified.");
 
   const store = await loadStore();
+  if (store.credentials.length > 0 && !challenge.enrollmentAuthorized) {
+    throw new Error("An existing passkey must approve adding a device.");
+  }
   const credential = result.registrationInfo.credential;
   if (!store.credentials.some((entry) => entry.id === credential.id)) {
     store.credentials.push({

@@ -23,9 +23,13 @@ export async function getPasskeyStatus(): Promise<PasskeyStatus> {
 }
 
 export async function registerPasskey(): Promise<void> {
+  const status = await getPasskeyStatus();
+  const approval = status.registered
+    ? await approveProposal(await hashProposal({ action: "register-passkey", network: "testnet" }))
+    : undefined;
   const { challengeId, options } = await json<{ challengeId: string; options: Parameters<typeof startRegistration>[0]["optionsJSON"] }>(
     "/api/passkey/register/options",
-    { method: "POST", body: "{}" },
+    { method: "POST", body: JSON.stringify({ approvalId: approval?.approvalId }) },
   );
   const response = await startRegistration({ optionsJSON: options });
   await json("/api/passkey/register/verify", {
