@@ -1,5 +1,6 @@
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
+import { bcs } from "@mysten/sui/bcs";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   normalizeStructTag,
@@ -8,7 +9,7 @@ import {
   SUI_SYSTEM_STATE_OBJECT_ID,
   toHex,
 } from "@mysten/sui/utils";
-import { assertTestnet, explorerTxUrl, vaultConfig, type VaultConfig } from "../config.js";
+import { assertTestnet, explorerTxUrl, knownCoin, vaultConfig, type VaultConfig } from "../config.js";
 import { formatUnits } from "./balance.js";
 import type { SuiNetwork } from "./client.js";
 import { formatAmount, getCoinInfo } from "./coins.js";
@@ -24,6 +25,12 @@ export interface StakePosition {
   stakedSuiId: string;
   principalMist: bigint;
   activationEpoch: string;
+}
+
+/** A non-SUI coin balance held by the vault. Only the owner can withdraw it. */
+export interface HeldCoin {
+  coinType: string;
+  raw: bigint;
 }
 
 /** Coins in the vault's trading sleeve: the only funds the agent can swap. */
@@ -102,6 +109,10 @@ export interface VaultStatus {
   allowedValidators: string[];
   /** Open staking positions held by the vault. */
   stakes: StakePosition[];
+  /** Coin types (other than SUI) the owner allows the vault to hold. */
+  allowedCoins: string[];
+  /** Non-SUI coin balances in the vault. */
+  coins: HeldCoin[];
   /** Per-coin balances the owner has allocated for the agent to swap. */
   trading: TradingBalance[];
   /** Owner-approved trades the agent may still execute. */
@@ -176,6 +187,14 @@ export function typeArguments(type: string): string[] {
   return args.map((arg) => normalizeStructTag(arg));
 }
 
+/** `0x..::spending_vault::CoinKey<0x..::dbtc::DBTC>` -> `0x..::dbtc::DBTC`. */
+function coinTypeArgument(keyType: string): string {
+  const start = keyType.indexOf("<");
+  const end = keyType.lastIndexOf(">");
+  if (start === -1 || end <= start) throw new Error(`Unexpected vault coin key type: ${keyType}`);
+  return normalizeStructTag(keyType.slice(start + 1, end));
+}
+
 /**
  * The allowlist and staking receipts live on the vault as dynamic fields (keeps the
  * Vault struct unchanged across upgrades). Keys are identified by their Move type name.
@@ -183,6 +202,8 @@ export function typeArguments(type: string): string[] {
 async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   const allowedValidators: string[] = [];
   const stakedSuiIds: string[] = [];
+  const allowedCoins: string[] = [];
+  const coins: HeldCoin[] = [];
   const tradingFields: { fieldId: string; coinType: string }[] = [];
   const intentIds: string[] = [];
   const allowedRecipients: string[] = [];
@@ -193,9 +214,10 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
 
   let cursor: string | null = null;
   do {
-    const page: Awaited<ReturnType<SuiGrpcClient["listDynamicFields"]>> = await client.listDynamicFields({
+    const page: Awaited<ReturnType<typeof client.listDynamicFields<{ value: true }>>> = await client.listDynamicFields({
       parentId: vaultId,
       cursor,
+      include: { value: true },
     });
     for (const entry of page.dynamicFields) {
       if (entry.name.type.includes("::spending_vault::AllowedValidator")) {
@@ -203,6 +225,11 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
         allowedValidators.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
       } else if (entry.$kind === "DynamicObject" && entry.name.type.includes("::spending_vault::StakeKey")) {
         stakedSuiIds.push(entry.childId);
+      } else if (entry.name.type.includes("::spending_vault::AllowedCoin<")) {
+        allowedCoins.push(coinTypeArgument(entry.name.type));
+      } else if (entry.name.type.includes("::spending_vault::CoinKey<")) {
+        // Balance<T> { value: u64 } serializes to a single u64.
+        coins.push({ coinType: coinTypeArgument(entry.name.type), raw: BigInt(bcs.u64().parse(entry.value.bcs)) });
       } else if (entry.$kind === "DynamicField" && entry.name.type.includes("::spending_vault::TradingKey<")) {
         const [coinType] = typeArguments(entry.name.type);
         if (coinType) tradingFields.push({ fieldId: entry.fieldId, coinType });
@@ -350,6 +377,8 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
 
   return {
     allowedValidators,
+    allowedCoins,
+    coins,
     stakes,
     trading,
     intents,
@@ -439,6 +468,17 @@ export function classifySpend(
   return { direct: true };
 }
 
+/** Unknown coin types show the raw amount and full type rather than a guessed symbol. */
+function formatCoinAmount(coinType: string, raw: bigint): string {
+  const known = knownCoin(coinType);
+  return known ? `${formatUnits(raw, known.decimals)} ${known.symbol}` : `${raw} (raw units of ${coinType})`;
+}
+
+function coinLabel(coinType: string): string {
+  const known = knownCoin(coinType);
+  return known ? `${known.symbol} (${coinType})` : coinType;
+}
+
 export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vaultConfig()): string {
   const sui = (mist: bigint) => `${formatUnits(mist, SUI_DECIMALS)} SUI`;
   return [
@@ -452,6 +492,10 @@ export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vau
     status.stakes.length
       ? `Staked: ${status.stakes.map((s) => `${sui(s.principalMist)} (receipt ${s.stakedSuiId}, active from epoch ${s.activationEpoch})`).join("; ")}`
       : "Staked: nothing",
+    `Other coins allowed: ${status.allowedCoins.length ? status.allowedCoins.map(coinLabel).join(", ") : "none (only SUI until the owner allows a coin)"}`,
+    status.coins.length
+      ? `Other coins held (owner-only withdrawal): ${status.coins.map((c) => formatCoinAmount(c.coinType, c.raw)).join("; ")}`
+      : "Other coins held: none",
     status.trading.length
       ? `Trading sleeve (the only funds the agent can swap): ${status.trading.map((t) => formatAmount(t.raw, t)).join(", ")}`
       : "Trading sleeve: empty (the owner has not allocated any funds for swaps)",

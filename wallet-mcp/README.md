@@ -115,7 +115,7 @@ owner policies are set (see [Owner policies](#owner-policies)).
 
 | Tool | Inputs | Behavior |
 |---|---|---|
-| `vault_status` | none | Reads vault balance, per-spend limit, total spent, and paused flag. |
+| `vault_status` | none | Reads vault balance, per-spend limit, total spent, paused flag, staking allowlist and positions, and other coins the vault may hold or holds. |
 | `vault_spend` | `to`, `amount`, `dryRun` optional | Pays from the vault under its on-chain rules. |
 | `vault_stake` | `validator`, `amount`, `dryRun` optional | Stakes vault funds with a validator the owner allowed, within the stake policy if one is set. The receipt stays in the vault. |
 
