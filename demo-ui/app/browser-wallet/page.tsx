@@ -311,7 +311,7 @@ export default function Home() {
 
           <article className="card">
             <div className="card-head">
-              <span className="step">4</span>
+              <span className="step">2</span>
               <h2>Passkey approval</h2>
             </div>
             <p className="muted">
@@ -341,7 +341,7 @@ export default function Home() {
 
           <article className="card">
             <div className="card-head">
-              <span className="step">2</span>
+              <span className="step">3</span>
               <h2>Get testnet SUI</h2>
             </div>
             <p className="muted">
@@ -363,7 +363,7 @@ export default function Home() {
 
           <article className="card">
             <div className="card-head">
-              <span className="step">3</span>
+              <span className="step">4</span>
               <h2>Send SUI</h2>
             </div>
             <p className="muted">
