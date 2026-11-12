@@ -126,6 +126,29 @@ async function execute(ctx: OwnerContext, tx: Transaction): Promise<OwnerReceipt
   };
 }
 
+/** Operator-only setup: grant this vault's constrained agent capability. */
+export async function authorizeAgent(ctx: OwnerContext, agent: string): Promise<OwnerReceipt> {
+  assertTestnet(ctx.network);
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::issue_agent_cap`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.address(requireAddress(agent))],
+  });
+  return execute(ctx, tx);
+}
+
+/** Operator-only top-up of the main vault balance, not the trading sleeve. */
+export async function fundVault(ctx: OwnerContext, amountMist: bigint): Promise<OwnerReceipt> {
+  assertTestnet(ctx.network);
+  if (amountMist <= 0n) throw new Error("Funding amount must be positive.");
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  const coin = coinWithBalance({ balance: amountMist, type: "0x2::sui::SUI" })(tx);
+  tx.moveCall({ target: `${packageId}::spending_vault::deposit`, arguments: [tx.object(vaultId), coin] });
+  return execute(ctx, tx);
+}
+
 // === Trading sleeve ===
 
 export async function allocateSui(ctx: OwnerContext, amountMist: bigint): Promise<OwnerReceipt> {

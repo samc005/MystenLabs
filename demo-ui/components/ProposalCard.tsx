@@ -1,4 +1,5 @@
 "use client";
+import { approveProposal, hashProposal } from "@/lib/passkey";
 
 import { useCallback, useEffect, useState } from "react";
 import { explorerTx, formatUnits, isSpendProposal, type Proposal } from "@/lib/proposals";
@@ -68,10 +69,11 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
     setActing(action);
     setActionError(null);
     try {
+      const { approvalId } = await approveProposal(await hashProposal({ action: "proposal-decision", id, decision: action, proposal }));
       const response = await fetch(`/api/proposals/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, approvalId }),
       });
       const body = (await response.json()) as { proposal?: Proposal; error?: string };
       if (!response.ok || !body.proposal) throw new Error(body.error ?? `Request failed (${response.status})`);
@@ -214,6 +216,11 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
             </p>
           )}
         </>
+      )}
+      {p.status === "approved" && (
+        <button onClick={() => onApproved(p)} disabled={acting !== null}>
+          Prepare approved transaction
+        </button>
       )}
       {p.status === "expired" && <p className="proposal-note">The approval window closed. Ask Cipher for a new proposal.</p>}
 

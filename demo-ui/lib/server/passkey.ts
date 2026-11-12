@@ -1,5 +1,5 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import {
   generateAuthenticationOptions,
@@ -28,12 +28,15 @@ type StoredCredential = {
 type Store = {
   credentials: StoredCredential[];
   revoked: boolean;
+  enrollmentTokenHash?: string;
 };
 
 type Challenge = {
   value: string;
   kind: "registration" | "authentication";
   enrollmentAuthorized?: boolean;
+  revision: number;
+  recoveryEnrollmentAuthorized?: boolean;
   proposalHash?: string;
   expiresAt: number;
 };
@@ -48,25 +51,51 @@ type Approval = {
 const challenges = new Map<string, Challenge>();
 const approvals = new Map<string, Approval>();
 let storePromise: Promise<Store> | undefined;
+let credentialRevision = 0;
+let mutations: Promise<unknown> = Promise.resolve();
+function mutate<T>(work: () => Promise<T>): Promise<T> {
+  const result = mutations.then(work);
+  mutations = result.catch(() => undefined);
+  return result;
+}
+function invalidateAuthorizations() {
+  credentialRevision++;
+  challenges.clear();
+  approvals.clear();
+}
 
 async function loadStore(): Promise<Store> {
   if (!storePromise) {
     storePromise = readFile(STORE_FILE, "utf8")
       .then((raw) => {
         const parsed = JSON.parse(raw) as Partial<Store>;
+        if (!Array.isArray(parsed.credentials) || typeof parsed.revoked !== "boolean") {
+          throw new Error("Invalid credential store.");
+        }
+        if (parsed.enrollmentTokenHash !== undefined &&
+            (typeof parsed.enrollmentTokenHash !== "string" || !/^[a-f0-9]{64}$/.test(parsed.enrollmentTokenHash))) {
+          throw new Error("Invalid recovery enrollment state.");
+        }
         return {
           credentials: Array.isArray(parsed.credentials) ? parsed.credentials : [],
           revoked: parsed.revoked === true,
+          ...(typeof parsed.enrollmentTokenHash === "string" ? { enrollmentTokenHash: parsed.enrollmentTokenHash } : {}),
         };
       })
-      .catch(() => ({ credentials: [], revoked: false }));
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return { credentials: [], revoked: false };
+        storePromise = undefined;
+        throw new Error("Cannot read passkey credentials. Restore the credential store before continuing.");
+      });
   }
   return storePromise;
 }
 
 async function saveStore(store: Store): Promise<void> {
-  await mkdir(STORE_DIR, { recursive: true });
-  await writeFile(STORE_FILE, JSON.stringify(store, null, 2), { mode: 0o600 });
+  await mkdir(STORE_DIR, { recursive: true, mode: 0o700 });
+  const temporary = STORE_FILE + "." + randomUUID() + ".tmp";
+  await writeFile(temporary, JSON.stringify(store, null, 2), { mode: 0o600, flag: "wx" });
+  await rename(temporary, STORE_FILE);
   storePromise = Promise.resolve(store);
 }
 
@@ -107,14 +136,23 @@ function credentialForVerification(credential: StoredCredential): WebAuthnCreden
   };
 }
 
-export async function passkeyStatus(): Promise<{ registered: boolean; credentialCount: number; revoked: boolean }> {
+export async function passkeyStatus(): Promise<{ registered: boolean; credentialCount: number; revoked: boolean; recoveryPending: boolean }> {
   const store = await loadStore();
-  return { registered: store.credentials.length > 0, credentialCount: store.credentials.length, revoked: store.revoked };
+  return { registered: store.credentials.length > 0, credentialCount: store.credentials.length, revoked: store.revoked, recoveryPending: Boolean(store.enrollmentTokenHash) };
 }
 
-export async function registrationOptions(request: Request, approvalId?: string) {
+export async function registrationOptions(request: Request, approvalId?: string, recoveryToken?: string) {
   const { rpID } = requestContext(request);
   const store = await loadStore();
+  let recoveryEnrollmentAuthorized = false;
+  if (store.enrollmentTokenHash) {
+    if (!recoveryToken || !/^[a-f0-9]{64}$/.test(recoveryToken) ||
+        createHash("sha256").update(recoveryToken).digest("hex") !== store.enrollmentTokenHash) {
+      throw new Error("Complete registration in the recovery tab, or generate a new local recovery code.");
+    }
+    recoveryEnrollmentAuthorized = true;
+  }
+  const revision = credentialRevision;
   const enrollmentAuthorized = store.credentials.length > 0;
   if (enrollmentAuthorized) {
     if (!approvalId) throw new Error("An existing passkey must approve adding a device.");
@@ -138,7 +176,9 @@ export async function registrationOptions(request: Request, approvalId?: string)
   rememberChallenge(challengeId, {
     value: options.challenge,
     kind: "registration",
+    revision,
     enrollmentAuthorized,
+    recoveryEnrollmentAuthorized,
     expiresAt: Date.now() + CHALLENGE_TTL_MS,
   });
   return { challengeId, options };
@@ -160,22 +200,27 @@ export async function verifyRegistration(
   });
   if (!result.verified) throw new Error("Passkey registration could not be verified.");
 
-  const store = await loadStore();
-  if (store.credentials.length > 0 && !challenge.enrollmentAuthorized) {
-    throw new Error("An existing passkey must approve adding a device.");
-  }
-  const credential = result.registrationInfo.credential;
-  if (!store.credentials.some((entry) => entry.id === credential.id)) {
-    store.credentials.push({
-      id: credential.id,
-      publicKey: Buffer.from(credential.publicKey).toString("base64"),
-      counter: credential.counter,
-      transports: response.response.transports,
-      label: `Device ${store.credentials.length + 1}`,
-      createdAt: new Date().toISOString(),
-    });
-    await saveStore(store);
-  }
+  await mutate(async () => {
+    const store = await loadStore();
+    if (challenge.revision !== credentialRevision) throw new Error("Credentials changed. Start registration again.");
+    if (store.credentials.length > 0 && !challenge.enrollmentAuthorized) {
+      throw new Error("An existing passkey must approve adding a device.");
+    }
+    if (store.enrollmentTokenHash && !challenge.recoveryEnrollmentAuthorized) throw new Error("Recovery authorization required.");
+    const { enrollmentTokenHash: _recovery, ...registeredStore } = store;
+    const credential = result.registrationInfo.credential;
+    if (!store.credentials.some(entry => entry.id === credential.id)) {
+      await saveStore({
+        ...registeredStore,
+        credentials: [...store.credentials, {
+          id: credential.id, publicKey: Buffer.from(credential.publicKey).toString("base64"),
+          counter: credential.counter, transports: response.response.transports,
+          label: `Device ${store.credentials.length + 1}`, createdAt: new Date().toISOString(),
+        }],
+      });
+      invalidateAuthorizations();
+    }
+  });
 }
 
 export async function authenticationOptions(request: Request, proposalHash: string) {
@@ -184,6 +229,7 @@ export async function authenticationOptions(request: Request, proposalHash: stri
   const store = await loadStore();
   if (store.credentials.length === 0) throw new Error("Register a passkey before approving an action.");
   const challengeId = randomUUID();
+  const revision = credentialRevision;
   const options = await generateAuthenticationOptions({
     rpID,
     allowCredentials: store.credentials.map((credential) => ({
@@ -195,6 +241,7 @@ export async function authenticationOptions(request: Request, proposalHash: stri
   rememberChallenge(challengeId, {
     value: options.challenge,
     kind: "authentication",
+    revision,
     proposalHash,
     expiresAt: Date.now() + CHALLENGE_TTL_MS,
   });
@@ -220,17 +267,21 @@ export async function verifyAuthentication(
     requireUserVerification: true,
   });
   if (!result.verified) throw new Error("Passkey approval could not be verified.");
-  credential.counter = result.authenticationInfo.newCounter;
-  await saveStore(store);
-
-  const approvalId = randomUUID();
-  approvals.set(approvalId, {
-    id: approvalId,
-    proposalHash: challenge.proposalHash!,
-    expiresAt: Date.now() + CHALLENGE_TTL_MS,
-    used: false,
+  return mutate(async () => {
+    const current = await loadStore();
+    const active = current.credentials.find(entry => entry.id === response.id);
+    if (challenge.revision !== credentialRevision || !active) throw new Error("Credentials changed. Authenticate again.");
+    const counter = result.authenticationInfo.newCounter;
+    if (active.counter > 0 && counter <= active.counter) throw new Error("Passkey counter did not advance.");
+    await saveStore({ ...current, credentials: current.credentials.map(entry =>
+      entry.id === active.id ? { ...entry, counter } : entry) });
+    const approvalId = randomUUID();
+    approvals.set(approvalId, {
+      id: approvalId, proposalHash: challenge.proposalHash!,
+      expiresAt: Date.now() + CHALLENGE_TTL_MS, used: false,
+    });
+    return { approvalId, proposalHash: challenge.proposalHash! };
   });
-  return { approvalId, proposalHash: challenge.proposalHash! };
 }
 
 export async function consumeApproval(approvalId: string, proposalHash: string): Promise<void> {
@@ -242,7 +293,50 @@ export async function consumeApproval(approvalId: string, proposalHash: string):
 }
 
 export async function setRevoked(revoked: boolean): Promise<void> {
-  const store = await loadStore();
-  store.revoked = revoked;
-  await saveStore(store);
+  await mutate(async () => {
+    const store = await loadStore();
+    await saveStore({ ...store, revoked });
+  });
+}
+
+export async function listCredentials(approvalId: string) {
+  const hash = createHash("sha256").update(JSON.stringify({ action: "list-passkeys" })).digest("hex");
+  await consumeApproval(approvalId, hash);
+  return (await loadStore()).credentials.map(({ id, label, createdAt }) => ({ id, label, createdAt }));
+}
+
+export async function removeCredential(id: string, approvalId: string): Promise<void> {
+  await mutate(async () => {
+    const store = await loadStore();
+    if (!store.credentials.some(entry => entry.id === id)) throw new Error("Credential not found.");
+    if (store.credentials.length <= 1) throw new Error("Add another passkey before removing your last one. If it is lost, use local recovery.");
+    const hash = createHash("sha256").update(JSON.stringify({ action: "remove-passkey", id })).digest("hex");
+    await consumeApproval(approvalId, hash);
+    await saveStore({ ...store, credentials: store.credentials.filter(entry => entry.id !== id) });
+    invalidateAuthorizations();
+  });
+}
+
+/** Recovery requires a private, short-lived code generated by the local operator CLI. */
+export async function recoverCredentials(code: string): Promise<string> {
+  return mutate(async () => {
+    if (!/^[a-f0-9]{64}$/.test(code)) throw new Error("Invalid or expired recovery code.");
+    const recoveryFile = path.join(STORE_DIR, "recovery.json");
+    let record: { hash?: string; expiresAt?: number };
+    try { record = JSON.parse(await readFile(recoveryFile, "utf8")); }
+    catch { throw new Error("Invalid or expired recovery code. Generate a new code in your local terminal."); }
+    const actual = createHash("sha256").update(code).digest();
+    if (typeof record.hash !== "string" || !/^[a-f0-9]{64}$/.test(record.hash) ||
+        typeof record.expiresAt !== "number" || !Number.isFinite(record.expiresAt) || record.expiresAt <= Date.now() ||
+        !timingSafeEqual(actual, Buffer.from(record.hash, "hex"))) throw new Error("Invalid or expired recovery code.");
+    const store = await loadStore();
+    // Atomic claim also prevents another server process from consuming the same file.
+    await rename(recoveryFile, path.join(STORE_DIR, "recovery-used-" + randomUUID() + ".json"));
+    await writeFile(path.join(STORE_DIR, "credentials-backup-" + randomUUID() + ".json"),
+      JSON.stringify(store, null, 2), { mode: 0o600, flag: "wx" });
+    const recoveryToken = randomBytes(32).toString("hex");
+    await saveStore({ credentials: [], revoked: true, enrollmentTokenHash: createHash("sha256").update(recoveryToken).digest("hex") });
+    invalidateAuthorizations();
+    return recoveryToken;
+  });
 }
