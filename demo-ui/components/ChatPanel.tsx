@@ -155,6 +155,7 @@ export function ChatPanel({ onToolResult }: Props) {
     <section className="card chat">
       <div className="card-head spread">
         <h2>Cipher</h2>
+        <a href="/passkeys">Manage passkeys / recovery</a>
         <button className="ghost small-btn" onClick={reset} disabled={items.length === 0}>
           New chat
         </button>

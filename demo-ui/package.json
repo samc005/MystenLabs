@@ -8,7 +8,8 @@
     "build": "\"${npm_node_execpath:-node}\" node_modules/next/dist/bin/next build",
     "start": "\"${npm_node_execpath:-node}\" node_modules/next/dist/bin/next start -H 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "passkeys:recover": "\"${npm_node_execpath:-node}\" scripts/recover-passkeys.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",

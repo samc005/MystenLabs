@@ -330,6 +330,7 @@ export default function Home() {
                 {passkey?.revoked ? "Unlock AI spending" : "Emergency lock"}
               </button>
             </div>
+            <p><Link href="/passkeys">Manage devices or recover a lost passkey</Link></p>
             <p className="muted small">
               {passkey?.registered
                 ? `${passkey.credentialCount} device${passkey.credentialCount === 1 ? "" : "s"} registered · ${
