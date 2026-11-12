@@ -17,14 +17,23 @@ import {
   type TransferReceipt,
 } from "@/lib/sui";
 import { loadOrCreateWallet, resetWallet, type DemoWallet } from "@/lib/wallet";
+import {
+  approveProposal,
+  getPasskeyStatus,
+  hashProposal,
+  registerPasskey,
+  setPasskeyRevoked,
+  type PasskeyStatus,
+} from "@/lib/passkey";
 
 const DEFAULT_AMOUNT = "0.01";
+const PASSKEY_THRESHOLD_MIST = 100_000_000n;
 const FUNDING_POLL_MS = 4_000;
 const FUNDING_TIMEOUT_MS = 10 * 60_000;
 
 interface ToolCall {
   id: number;
-  tool: "get_balance" | "transfer_sui";
+  tool: "get_balance" | "transfer_sui" | "passkey_approval";
   args: Record<string, string>;
   output: string;
   isError: boolean;
@@ -64,6 +73,8 @@ export default function Home() {
   const [receipt, setReceipt] = useState<TransferReceipt | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [calls, setCalls] = useState<ToolCall[]>([]);
+  const [passkey, setPasskey] = useState<PasskeyStatus | null>(null);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
 
   const logCall = useCallback((call: Omit<ToolCall, "id" | "at">) => {
     const entry = { ...call, id: nextId.current++, at: new Date().toLocaleTimeString() };
@@ -77,6 +88,7 @@ export default function Home() {
     setSender(s);
     setReceiver(r);
     setRecipient(r.address);
+    void getPasskeyStatus().then(setPasskey).catch((error) => setNotice(errorMessage(error)));
   }, []);
 
   const refreshBalances = useCallback(
@@ -160,6 +172,24 @@ export default function Home() {
       } catch {
         throw new Error(`Amount must be a positive SUI decimal string, for example "0.01". Got "${args.amount}".`);
       }
+      if (passkey?.revoked) throw new Error("AI spending is locked. Unlock it with a passkey first.");
+      if (amountMist > PASSKEY_THRESHOLD_MIST) {
+        if (!passkey?.registered) throw new Error("Register a passkey before sending more than 0.1 SUI.");
+        const proposalHash = await hashProposal({
+          action: "transfer_sui",
+          network: NETWORK,
+          sender: sender.address,
+          recipient: args.to,
+          amountMist: amountMist.toString(),
+        });
+        const approval = await approveProposal(proposalHash);
+        logCall({
+          tool: "passkey_approval",
+          args: { proposalHash, threshold: "0.1 SUI" },
+          output: `Passkey approved proposal ${proposalHash}. Approval ${approval.approvalId}.`,
+          isError: false,
+        });
+      }
       const result = await transferSui({
         client: client.current,
         signer: sender.keypair,
@@ -189,6 +219,42 @@ export default function Home() {
     setWatching(false);
     setCalls([]);
     setNotice("Created two new testnet wallets. The old ones are gone from this browser.");
+  }
+
+  async function enrollPasskey() {
+    setPasskeyBusy(true);
+    setNotice(null);
+    try {
+      await registerPasskey();
+      const status = await getPasskeyStatus();
+      setPasskey(status);
+      setNotice("Passkey registered. A passkey is required for transfers above 0.1 SUI.");
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
+
+  async function changeSpendingLock(revoked: boolean) {
+    setPasskeyBusy(true);
+    setNotice(null);
+    try {
+      if (!passkey?.registered) throw new Error("Register a passkey first.");
+      const proposalHash = await hashProposal({
+        action: revoked ? "revoke-ai-access" : "restore-ai-access",
+        network: NETWORK,
+        reason: revoked ? "Emergency lock" : "Owner unlock",
+      });
+      const approval = await approveProposal(proposalHash);
+      await setPasskeyRevoked(approval.approvalId, proposalHash, revoked);
+      setPasskey(await getPasskeyStatus());
+      setNotice(revoked ? "AI spending is locked." : "AI spending is unlocked.");
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setPasskeyBusy(false);
+    }
   }
 
   const funded = senderBalance !== null && senderBalance > 0n;
@@ -241,6 +307,36 @@ export default function Home() {
                 New wallets
               </button>
             </div>
+          </article>
+
+          <article className="card">
+            <div className="card-head">
+              <span className="step">4</span>
+              <h2>Passkey approval</h2>
+            </div>
+            <p className="muted">
+              WebAuthn credentials stay in your device authenticator. Transfers above 0.1 SUI require user verification,
+              and the emergency lock requires a passkey.
+            </p>
+            <div className="actions">
+              <button onClick={enrollPasskey} disabled={passkeyBusy}>
+                {passkeyBusy ? "Waiting…" : passkey?.registered ? "Register another device" : "Register passkey"}
+              </button>
+              <button
+                className="secondary"
+                onClick={() => changeSpendingLock(!passkey?.revoked)}
+                disabled={passkeyBusy || !passkey?.registered}
+              >
+                {passkey?.revoked ? "Unlock AI spending" : "Emergency lock"}
+              </button>
+            </div>
+            <p className="muted small">
+              {passkey?.registered
+                ? `${passkey.credentialCount} device${passkey.credentialCount === 1 ? "" : "s"} registered · ${
+                    passkey.revoked ? "locked" : "active"
+                  }`
+                : "No passkey registered yet."}
+            </p>
           </article>
 
           <article className="card">
