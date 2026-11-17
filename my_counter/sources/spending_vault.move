@@ -61,6 +61,49 @@ const ERecipientBlocked: u64 = 29;
 const EClockRequired: u64 = 30;
 const EDayLimit: u64 = 31;
 const EWeekLimit: u64 = 32;
+const EActionDisabled: u64 = 33;
+const EMandatoryPolicy: u64 = 34;
+
+/// Once installed this policy has no remove function. Only OwnerCap can change
+/// permissions. Prior package versions are frozen through their own pause fields.
+public struct AgentSecurityPolicyKey has copy, drop, store {}
+public struct AgentSecurityPolicy has drop, store {
+    paused: bool, payments: bool, staking: bool, trading: bool,
+}
+public struct AgentSecurityPolicySet has copy, drop {
+    vault_id: ID, payments: bool, staking: bool, trading: bool,
+}
+public fun set_agent_security_policy(cap: &OwnerCap, vault: &mut Vault, payments: bool, staking: bool, trading: bool) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    let paused = is_paused(vault);
+    migrate_policy_enforcement(cap, vault);
+    // v1 reads Vault.paused; v2 reads PolicyMigration.paused. Freeze both.
+    let previous: &mut PolicyMigration = df::borrow_mut(&mut vault.id, PolicyMigrationKey {});
+    previous.paused = true;
+    if (df::exists(&vault.id, AgentSecurityPolicyKey {})) {
+        let policy: &mut AgentSecurityPolicy = df::borrow_mut(&mut vault.id, AgentSecurityPolicyKey {});
+        policy.payments = payments;
+        policy.staking = staking;
+        policy.trading = trading;
+    } else {
+        df::add(&mut vault.id, AgentSecurityPolicyKey {}, AgentSecurityPolicy { paused, payments, staking, trading });
+    };
+    event::emit(AgentSecurityPolicySet { vault_id: object::id(vault), payments, staking, trading });
+}
+fun assert_agent_permission(vault: &Vault, action: u8) {
+    // Older vaults retain their behavior until the owner explicitly migrates.
+    if (!df::exists(&vault.id, AgentSecurityPolicyKey {})) return;
+    let policy: &AgentSecurityPolicy = df::borrow(&vault.id, AgentSecurityPolicyKey {});
+    assert!(if (action == 0) policy.payments else if (action == 1) policy.staking else policy.trading, EActionDisabled);
+}
+fun assert_mandatory_spend_policy(vault: &Vault) {
+    if (!df::exists(&vault.id, AgentSecurityPolicyKey {})) return;
+    assert!(df::exists(&vault.id, SpendPolicyKey {}), EMandatoryPolicy);
+    assert!(df::exists(&vault.id, CalendarPolicyKey {}), EMandatoryPolicy);
+    let policy: &SpendPolicy = df::borrow(&vault.id, SpendPolicyKey {});
+    assert!(policy.enforce_recipients, EMandatoryPolicy);
+}
+
 const DAY_MS: u64 = 86_400_000;
 const WEEK_MS: u64 = 604_800_000;
 
@@ -224,6 +267,26 @@ public fun create(per_tx_limit: u64, ctx: &mut TxContext) {
     transfer::public_transfer(owner_cap, ctx.sender());
 }
 
+/// New secure vaults deny every agent action until explicitly enabled by owner.
+public fun create_secure(per_tx_limit: u64, ctx: &mut TxContext) {
+    let mut vault = Vault {
+        id: object::new(ctx),
+        balance: sui::balance::zero(),
+        per_tx_limit,
+        paused: true,
+        agent_version: 0,
+        total_spent: 0,
+    };
+    df::add(&mut vault.id, PolicyMigrationKey {}, PolicyMigration { paused: true });
+    df::add(&mut vault.id, AgentSecurityPolicyKey {}, AgentSecurityPolicy { paused: false, payments: false, staking: false, trading: false });
+    let owner_cap = OwnerCap {
+        id: object::new(ctx),
+        vault_id: object::id(&vault),
+    };
+    transfer::share_object(vault);
+    transfer::public_transfer(owner_cap, ctx.sender());
+}
+
 /// Give an address permission to spend from the vault (within its rules).
 public fun issue_agent_cap(
     cap: &OwnerCap,
@@ -247,7 +310,13 @@ public fun set_per_tx_limit(cap: &OwnerCap, vault: &mut Vault, new_limit: u64) {
 
 public fun set_paused(cap: &OwnerCap, vault: &mut Vault, paused: bool) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
-    if (df::exists(&vault.id, PolicyMigrationKey {})) {
+    if (df::exists(&vault.id, AgentSecurityPolicyKey {})) {
+        let policy: &mut AgentSecurityPolicy = df::borrow_mut(&mut vault.id, AgentSecurityPolicyKey {});
+        policy.paused = paused;
+        vault.paused = true;
+        let previous: &mut PolicyMigration = df::borrow_mut(&mut vault.id, PolicyMigrationKey {});
+        previous.paused = true;
+    } else if (df::exists(&vault.id, PolicyMigrationKey {})) {
         let state: &mut PolicyMigration = df::borrow_mut(&mut vault.id, PolicyMigrationKey {});
         state.paused = paused;
         vault.paused = true;
@@ -387,6 +456,9 @@ public fun spend(
 }
 
 fun spend_impl(cap: &AgentCap, vault: &mut Vault, recipient: address, amount: u64, ctx: &mut TxContext) {
+    assert_agent_permission(vault, 0);
+    assert_mandatory_spend_policy(vault);
+    assert!(amount > 0, EZeroAmount);
     assert!(!df::exists(&vault.id, BlockedRecipient { recipient }), ERecipientBlocked);
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
@@ -414,6 +486,10 @@ fun spend_impl(cap: &AgentCap, vault: &mut Vault, recipient: address, amount: u6
 /// funds stay in the vault's custody and only the owner can unstake them. The
 /// validator allowlist is the staking rule instead.
 fun assert_can_stake(cap: &AgentCap, vault: &Vault, validator: address, amount: u64) {
+    assert_agent_permission(vault, 1);
+    if (df::exists(&vault.id, AgentSecurityPolicyKey {})) {
+        assert!(df::exists(&vault.id, StakePolicyKey {}), EMandatoryPolicy);
+    };
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
     assert!(!is_paused(vault), EPaused);
@@ -608,6 +684,7 @@ public fun begin_swap<In, Out>(
     clock: &Clock,
     ctx: &mut TxContext,
 ): (Coin<In>, SwapTicket<In, Out>) {
+    assert_agent_permission(vault, 2);
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
     assert!(!is_paused(vault), EPaused);
@@ -947,6 +1024,7 @@ public fun spend_approved(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_agent_permission(vault, 0);
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
     assert!(!is_paused(vault), EPaused);
@@ -1053,6 +1131,7 @@ public fun begin_swap_auto<In, Out>(
     clock: &Clock,
     ctx: &mut TxContext,
 ): (Coin<In>, SwapTicket<In, Out>) {
+    assert_agent_permission(vault, 2);
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
     assert!(!is_paused(vault), EPaused);
@@ -1179,6 +1258,13 @@ public fun per_tx_limit(vault: &Vault): u64 { vault.per_tx_limit }
 public fun total_spent(vault: &Vault): u64 { vault.total_spent }
 
 public fun is_paused(vault: &Vault): bool {
+    if (df::exists(&vault.id, AgentSecurityPolicyKey {})) {
+        assert!(vault.paused, EPaused);
+        let previous: &PolicyMigration = df::borrow(&vault.id, PolicyMigrationKey {});
+        assert!(previous.paused, EPaused);
+        let policy: &AgentSecurityPolicy = df::borrow(&vault.id, AgentSecurityPolicyKey {});
+        return policy.paused
+    };
     if (df::exists(&vault.id, PolicyMigrationKey {})) {
         // Fail closed if an operator used an old package's unpause function.
         assert!(vault.paused, EPaused);
@@ -3395,4 +3481,181 @@ fun test_new_unpause_never_unpauses_old_bytecode() {
     s.return_to_sender(cap);
     timed_spend(&mut s, 1, 0);
     s.end();
+}
+
+// A compromised agent invokes these functions directly; no UI/signer policy exists here.
+#[test_only]
+fun security_permissions(s: &mut ts::Scenario, payments: bool, staking: bool, trading: bool) {
+    s.next_tx(OWNER);
+    let cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    set_agent_security_policy(&cap, &mut vault, payments, staking, trading);
+    ts::return_shared(vault);
+    s.return_to_sender(cap);
+}
+#[test, expected_failure(abort_code = EActionDisabled)]
+fun test_security_rogue_agent_cannot_pay_when_disabled() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    security_permissions(&mut s, false, false, false);
+    agent_spends(&mut s, RECIPIENT, 1);
+    abort 999
+}
+#[test, expected_failure(abort_code = EActionDisabled)]
+fun test_security_disabled_payments_reject_old_owner_intents() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let id = owner_approves_spend(&mut s, RECIPIENT, 1, EXPIRY);
+    security_permissions(&mut s, false, false, false);
+    agent_runs_spend(&mut s, id, 1_000);
+    abort 999
+}
+#[test, expected_failure(abort_code = EActionDisabled)]
+fun test_security_disabled_staking_rejects_allowed_validator() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_allows_validator(&mut s, VALIDATOR);
+    security_permissions(&mut s, true, false, true);
+    agent_checks_stake(&mut s, 1);
+    abort 999
+}
+#[test, expected_failure(abort_code = EMandatoryPolicy)]
+fun test_security_enabled_staking_requires_limits() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_allows_validator(&mut s, VALIDATOR);
+    security_permissions(&mut s, false, true, false);
+    agent_checks_stake(&mut s, 1);
+    abort 999
+}
+#[test, expected_failure(abort_code = EActionDisabled)]
+fun test_security_disabled_trading_rejects_standing_rule() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_funds_sleeve(&mut s, 500);
+    owner_sets_rule(&mut s, 100, 250, 2, 1);
+    security_permissions(&mut s, true, true, false);
+    agent_auto_swap(&mut s, 1, 2, 2_000, 2);
+    abort 999
+}
+#[test, expected_failure(abort_code = EMandatoryPolicy)]
+fun test_security_missing_spend_policy_does_not_grant_permission() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    security_permissions(&mut s, true, false, false);
+    timed_spend(&mut s, 1, 0);
+    abort 999
+}
+#[test, expected_failure(abort_code = EMandatoryPolicy)]
+fun test_security_open_recipient_mode_does_not_grant_permission() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    owner_sets_spend_policy(&mut s, 100, false);
+    security_permissions(&mut s, true, false, false);
+    timed_spend(&mut s, 1, 0);
+    abort 999
+}
+#[test]
+fun test_security_configured_payment_and_version_barriers() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    owner_sets_spend_policy(&mut s, 100, true);
+    owner_allows_recipient(&mut s, @0xCAFE);
+    security_permissions(&mut s, true, false, false);
+    s.next_tx(OWNER);
+    let cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    set_paused(&cap, &mut vault, true);
+    assert!(is_paused(&vault));
+    set_paused(&cap, &mut vault, false);
+    assert!(!is_paused(&vault));
+    assert!(vault.paused);
+    let old: &PolicyMigration = df::borrow(&vault.id, PolicyMigrationKey {});
+    assert!(old.paused); // v2 cannot operate after migration or new-code unpause.
+    ts::return_shared(vault);
+    s.return_to_sender(cap);
+    timed_spend(&mut s, 1, 0);
+    s.end();
+}
+#[test, expected_failure(abort_code = EPaused)]
+fun test_security_prior_migrated_package_is_frozen() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    security_permissions(&mut s, true, true, true);
+    s.next_tx(AGENT);
+    let vault = s.take_shared<Vault>();
+    let old: &PolicyMigration = df::borrow(&vault.id, PolicyMigrationKey {});
+    assert!(!old.paused, EPaused); // Exact effective pause check from version 2.
+    abort 999
+}
+#[test]
+fun test_security_secure_constructor_denies_every_agent_action() {
+    let mut s = ts::begin(OWNER);
+    create_secure(100, s.ctx());
+    s.next_tx(OWNER);
+    let vault = s.take_shared<Vault>();
+    assert!(!is_paused(&vault));
+    assert!(vault.paused);
+    let policy: &AgentSecurityPolicy = df::borrow(&vault.id, AgentSecurityPolicyKey {});
+    assert!(!policy.payments && !policy.staking && !policy.trading);
+    ts::return_shared(vault);
+    s.end();
+}
+#[test, expected_failure(abort_code = EActionDisabled)]
+fun test_security_disabled_trading_rejects_owner_swap_intent() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let intent_id = setup_intent(&mut s, 150, 100, 190);
+    security_permissions(&mut s, false, false, false);
+    do_swap(&mut s, intent_id, 2_000, 195);
+    abort 999
+}
+#[test, expected_failure(abort_code = EMandatoryPolicy)]
+fun test_security_missing_calendar_rejects_direct_payment() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_sets_spend_policy(&mut s, 100, true);
+    owner_allows_recipient(&mut s, RECIPIENT);
+    security_permissions(&mut s, true, false, false);
+    agent_spends(&mut s, RECIPIENT, 1);
+    abort 999
+}
+#[test, expected_failure(abort_code = ERecipientNotAllowed)]
+fun test_security_rogue_agent_cannot_select_unapproved_recipient() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    owner_sets_spend_policy(&mut s, 100, true);
+    security_permissions(&mut s, true, false, false);
+    timed_spend(&mut s, 1, 0);
+    abort 999
+}
+#[test, expected_failure(abort_code = EDayLimit)]
+fun test_security_permission_toggle_does_not_reset_budget() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    owner_sets_spend_policy(&mut s, 100, true);
+    owner_allows_recipient(&mut s, @0xCAFE);
+    security_permissions(&mut s, true, false, false);
+    timed_spend(&mut s, 50, 0);
+    security_permissions(&mut s, false, false, false);
+    security_permissions(&mut s, true, false, false);
+    timed_spend(&mut s, 51, 0);
+    abort 999
+}
+#[test, expected_failure(abort_code = EWrongVault)]
+fun test_security_wrong_owner_cap_cannot_grant_permissions() {
+    let mut s = ts::begin(OWNER);
+    create(100, s.ctx());
+    create(100, s.ctx());
+    s.next_tx(OWNER);
+    let vault_a = s.take_shared<Vault>();
+    let mut vault_b = s.take_shared<Vault>();
+    let cap_a = s.take_from_sender<OwnerCap>();
+    let cap_b = s.take_from_sender<OwnerCap>();
+    if (cap_a.vault_id == object::id(&vault_a)) {
+        set_agent_security_policy(&cap_a, &mut vault_b, true, true, true);
+    } else {
+        set_agent_security_policy(&cap_b, &mut vault_b, true, true, true);
+    };
+    abort 999
 }
