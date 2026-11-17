@@ -311,7 +311,7 @@ export default function Home() {
 
           <article className="card">
             <div className="card-head">
-              <span className="step">4</span>
+              <span className="step">2</span>
               <h2>Passkey approval</h2>
             </div>
             <p className="muted">
@@ -330,6 +330,7 @@ export default function Home() {
                 {passkey?.revoked ? "Unlock AI spending" : "Emergency lock"}
               </button>
             </div>
+            <p><Link href="/passkeys">Manage devices or recover a lost passkey</Link></p>
             <p className="muted small">
               {passkey?.registered
                 ? `${passkey.credentialCount} device${passkey.credentialCount === 1 ? "" : "s"} registered · ${
@@ -341,7 +342,7 @@ export default function Home() {
 
           <article className="card">
             <div className="card-head">
-              <span className="step">2</span>
+              <span className="step">3</span>
               <h2>Get testnet SUI</h2>
             </div>
             <p className="muted">
@@ -363,7 +364,7 @@ export default function Home() {
 
           <article className="card">
             <div className="card-head">
-              <span className="step">3</span>
+              <span className="step">4</span>
               <h2>Send SUI</h2>
             </div>
             <p className="muted">

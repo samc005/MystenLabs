@@ -4,3 +4,9 @@ build/
 .env
 .claude/settings.local.json
 .proposals/
+
+.env*
+
+!.env.example
+
+!.env.signer.example

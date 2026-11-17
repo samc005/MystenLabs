@@ -72,6 +72,7 @@ export function registerApprovedTransaction(server: McpServer): void {
         }
         return {
           content: [{ type: "text", text: writeReceipt("testnet", digest, `Confirmed proposal ${input.proposalId}.`) }],
+          structuredContent: { digest, confirmed: true },
         };
       } catch (error) {
         return {

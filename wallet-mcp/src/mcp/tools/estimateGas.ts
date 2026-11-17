@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
+import { normalizeStructTag, SUI_TYPE_ARG } from "@mysten/sui/utils";
 import { z } from "zod";
 import { createSuiClient } from "../../blockchain/client.js";
 import { formatUnits } from "../../blockchain/balance.js";
@@ -36,6 +37,7 @@ export function registerEstimateGas(server: McpServer): void {
           : null;
         const status = executed.status.error ? `failed: ${executed.status.error}` : "success";
         return {
+          isError: result.$kind !== "Transaction",
           content: [
             {
               type: "text",
@@ -43,6 +45,12 @@ export function registerEstimateGas(server: McpServer): void {
                 `Network: ${network}`,
                 `Simulation: ${status}`,
                 `Estimated gas: ${gasMist === null ? "unavailable" : `${formatUnits(gasMist, 9)} SUI`}`,
+                "Balance changes reported by testnet:",
+                ...(executed.balanceChanges ?? []).map(change =>
+                  normalizeStructTag(change.coinType) === normalizeStructTag(SUI_TYPE_ARG)
+                    ? `${change.address}: ${formatUnits(BigInt(change.amount), 9)} SUI`
+                    : `${change.address}: ${change.amount} raw units of ${change.coinType}`
+                ),
                 `Gas mocked: ${result.gasPaymentMocked ? "yes" : "no"}`,
               ].join("\n"),
             },

@@ -46,6 +46,7 @@ export async function proposeSpend(input: {
   if (input.amountMist > status.balanceMist) {
     throw new Error(`The vault only holds ${sui(status.balanceMist)}, less than the requested ${sui(input.amountMist)}.`);
   }
+  if (status.blockedRecipients.includes(recipient)) throw new Error("Recipient is blacklisted. An owner intent cannot override the blacklist.");
   const verdict = classifySpend(status, recipient, input.amountMist);
   if (verdict.direct) {
     throw new Error(

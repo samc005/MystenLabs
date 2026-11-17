@@ -5,7 +5,7 @@
   "main": "build/index.js",
   "scripts": {
     "build": "tsc",
-    "signer": "node build/signer/main.js",
+    "signer": "\"${npm_node_execpath:-node}\" --env-file=.env.signer build/signer/main.js",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "web": "tsx src/web.ts",
@@ -16,7 +16,9 @@
     "vault": "tsx src/scripts/vault.ts",
     "owner": "tsx src/scripts/owner.ts",
     "boundaries": "tsx src/scripts/boundaries.ts",
-    "demo": "tsx src/scripts/demo.ts"
+    "demo": "tsx src/scripts/demo.ts",
+    "preflight": "\"${npm_node_execpath:-node}\" --env-file=../demo-ui/.env.local build/scripts/preflight.js",
+    "owner:demo": "\"${npm_node_execpath:-node}\" --env-file=../demo-ui/.env.local --import tsx src/scripts/owner.ts"
   },
   "keywords": [],
   "author": "",

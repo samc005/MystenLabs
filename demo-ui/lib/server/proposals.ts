@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 // Server side of the trade-approval flow.
 //
 // Reading: proposals are plain JSON files written by wallet-mcp's propose_trade tool.
@@ -6,9 +7,9 @@
 // the browser, and never passed to the MCP server that Cipher talks to.
 
 import { spawn } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
-import { PROPOSAL_ID, type Proposal } from "@/lib/proposals";
+import { PROPOSAL_ID, isSpendProposal, type Proposal } from "@/lib/proposals";
 import { walletMcpDir } from "./wallet-mcp";
 
 function proposalsDir(): string {
@@ -100,4 +101,17 @@ export async function decideProposal(id: string, action: "approve" | "reject"): 
   } finally {
     deciding.delete(id);
   }
+}
+
+/** Record UI status only after the signer submission has checkpoint confirmation. */
+export async function recordProposalExecution(id: string, kind: "swap" | "payment", digest: string): Promise<void> {
+  const proposal = await readProposal(id);
+  if (!proposal || (kind === "payment") !== isSpendProposal(proposal)) throw new Error("Proposal type mismatch.");
+  const updated = { ...proposal, status: "executed",
+    ...(kind === "payment" ? { spendDigest: digest } : { swapDigest: digest }),
+  };
+  const target = path.join(proposalsDir(), id + ".json");
+  const temporary = target + "." + randomUUID() + ".tmp";
+  await writeFile(temporary, JSON.stringify(updated, null, 2), { mode: 0o600, flag: "wx" });
+  await rename(temporary, target);
 }

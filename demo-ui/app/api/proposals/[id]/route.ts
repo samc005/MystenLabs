@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { consumeApproval, passkeyStatus } from "@/lib/server/passkey";
 import { rejectNonLocal } from "@/lib/server/local-only";
 import { decideProposal, readProposal } from "@/lib/server/proposals";
 
@@ -24,9 +26,18 @@ export async function POST(request: Request, { params }: Context) {
   const rejected = rejectNonLocal(request);
   if (rejected) return rejected;
   const { id } = await params;
-  const { action } = (await request.json().catch(() => ({}))) as { action?: string };
+  const { action, approvalId } = (await request.json().catch(() => ({}))) as { action?: string; approvalId?: string };
   if (action !== "approve" && action !== "reject") {
     return Response.json({ error: 'Send { "action": "approve" } or { "action": "reject" }.' }, { status: 400 });
+  }
+  try {
+    if ((await passkeyStatus()).revoked) throw new Error("Wallet access is locked.");
+    const proposal = await readProposal(id);
+    if (!proposal || !approvalId) throw new Error("Passkey approval required.");
+    const hash = createHash("sha256").update(JSON.stringify({ action: "proposal-decision", id, decision: action, proposal })).digest("hex");
+    await consumeApproval(approvalId, hash);
+  } catch (error) {
+    return Response.json({ error: String(error) }, { status: 403 });
   }
   const result = await decideProposal(id, action);
   if (!result.ok) return Response.json({ error: result.error }, { status: result.status });

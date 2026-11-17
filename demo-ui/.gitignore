@@ -6,3 +6,7 @@ out/
 .passkey/
 next-env.d.ts
 *.tsbuildinfo
+
+!.env.example
+
+!.env.signer.example

@@ -126,6 +126,29 @@ async function execute(ctx: OwnerContext, tx: Transaction): Promise<OwnerReceipt
   };
 }
 
+/** Operator-only setup: grant this vault's constrained agent capability. */
+export async function authorizeAgent(ctx: OwnerContext, agent: string): Promise<OwnerReceipt> {
+  assertTestnet(ctx.network);
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::spending_vault::issue_agent_cap`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.address(requireAddress(agent))],
+  });
+  return execute(ctx, tx);
+}
+
+/** Operator-only top-up of the main vault balance, not the trading sleeve. */
+export async function fundVault(ctx: OwnerContext, amountMist: bigint): Promise<OwnerReceipt> {
+  assertTestnet(ctx.network);
+  if (amountMist <= 0n) throw new Error("Funding amount must be positive.");
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  const coin = coinWithBalance({ balance: amountMist, type: "0x2::sui::SUI" })(tx);
+  tx.moveCall({ target: `${packageId}::spending_vault::deposit`, arguments: [tx.object(vaultId), coin] });
+  return execute(ctx, tx);
+}
+
 // === Trading sleeve ===
 
 export async function allocateSui(ctx: OwnerContext, amountMist: bigint): Promise<OwnerReceipt> {
@@ -525,4 +548,19 @@ export async function setPoolPrice(ctx: OwnerContext, usdcPerSui: string): Promi
     arguments: [tx.object(adminCap.objectId), tx.object(poolId), tx.pure.u64(price)],
   });
   return { ...(await execute(ctx, tx)), price };
+}
+/** Owner-only calendar limits; changing limits preserves existing counters. */
+export async function setCalendarPolicy(ctx: OwnerContext, day: bigint, week: bigint): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({ target: `${packageId}::spending_vault::set_calendar_policy`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.u64(day), tx.pure.u64(week), tx.object.clock()] });
+  return execute(ctx, tx);
+}
+export async function setRecipientBlocked(ctx: OwnerContext, recipient: string, blocked: boolean): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({ target: `${packageId}::spending_vault::${blocked ? "block_recipient" : "unblock_recipient"}`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.address(requireAddress(recipient))] });
+  return execute(ctx, tx);
 }

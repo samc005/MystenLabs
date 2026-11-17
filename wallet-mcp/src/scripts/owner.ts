@@ -5,6 +5,8 @@ import { createSuiClient } from "../blockchain/client.js";
 import { formatAmount, getCoinInfo, parseUnits, resolveCoinType } from "../blockchain/coins.js";
 import {
   allocateSui,
+  authorizeAgent,
+  fundVault,
   allowValidator,
   approveProposal,
   cancelIntent,
@@ -21,6 +23,8 @@ import {
   removeTradeRule,
   setPoolPrice,
   setRecipientAllowed,
+  setRecipientBlocked,
+  setCalendarPolicy,
   setSpendPolicy,
   setStakePolicy,
   setTradeRule,
@@ -35,6 +39,8 @@ import { resolveNetwork } from "../config.js";
 const USAGE = `Usage: npm run owner -- <command>
 
   status                                 vault balances, sleeve, approved trades
+  authorize-agent <address>              grant constrained vault access to this agent (owner only)
+  fund <sui>                            top up the main vault from the owner wallet
   allocate <sui>                         move SUI from the vault into the trading sleeve
   release <sui>                          move SUI back from the sleeve to the vault balance
   deposit <coin> <amount>                add coins from your wallet to the sleeve (SUI, tUSDC)
@@ -52,6 +58,9 @@ const USAGE = `Usage: npm run owner -- <command>
   clear-spend-policy                     remove the spending cap and allowlist requirement
   allow-recipient <address>              add to the recipient allowlist
   disallow-recipient <address>
+  calendar-policy <sui-per-day> <sui-per-week>  fixed UTC/Unix seven-day windows
+  block-recipient <address>              deny even an approved payment
+  unblock-recipient <address>
   stake-policy <maxStakedSui> <reserveSui> <maxPositions>
                                          cap staking: total staked, SUI that must stay liquid, number of positions
   clear-stake-policy                     remove the stake limits
@@ -98,6 +107,16 @@ async function main() {
   console.log(`Owner key: ${ctx.address}`);
 
   switch (command) {
+    case "authorize-agent": {
+      if (args.length !== 1) throw new Error(USAGE);
+      printReceipt("Issued agent capability. Find the new AgentCap in this address's objects and set SUI_VAULT_AGENT_CAP_ID.", await authorizeAgent(ctx, args[0]!));
+      return;
+    }
+    case "fund": {
+      if (args.length !== 1) throw new Error(USAGE);
+      printReceipt("Funded the main vault.", await fundVault(ctx, parseUnits(args[0]!, 9)));
+      return;
+    }
     case "allocate": {
       const [amount] = args;
       if (!amount) throw new Error(USAGE);
@@ -204,6 +223,18 @@ async function main() {
         `${allow ? "Allowed" : "Removed"} recipient ${recipient}.`,
         await setRecipientAllowed(ctx, recipient, allow),
       );
+      return;
+    }
+    case "calendar-policy": {
+      const [day, week] = args;
+      if (!day || !week) throw new Error(USAGE);
+      printReceipt("Calendar spending limits updated (existing counters preserved).", await setCalendarPolicy(ctx, parseUnits(day, 9), parseUnits(week, 9)));
+      return;
+    }
+    case "block-recipient":
+    case "unblock-recipient": {
+      if (!args[0]) throw new Error(USAGE);
+      printReceipt("Recipient blacklist updated.", await setRecipientBlocked(ctx, args[0], command === "block-recipient"));
       return;
     }
     case "stake-policy": {
