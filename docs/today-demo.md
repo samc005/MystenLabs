@@ -1,6 +1,6 @@
 # Today's separate-vault demo
 
-Your local environment points to your own new testnet vault and mock pool. The team vault is unchanged. Both staking and trading have passed real testnet simulations and actual MCP unsigned preparation. Real-device passkey execution must still be rehearsed.
+Your local environment points to your own new testnet vault and mock pool. The team vault is unchanged. Both staking and trading have passed real testnet simulations and actual MCP unsigned preparation. Real-device passkey authentication passed during the November 16 rollout; payment execution remains a separate action. See nov12-rollout.json for deployment receipts.
 
 ## Start / restart
 
@@ -25,7 +25,7 @@ Every check passed at setup time. The standing trade rule expires after 24 hours
 ## Six-minute meeting sequence
 
 1. Explain: “The agent interprets intent, code restricts capabilities, the owner authorizes exact transactions, and the vault enforces the rules on chain.”
-2. Enter balance and vault status. Authenticate with your existing passkey (or register on first use). Initially the vault has 1.18 SUI main balance, a 0.02 SUI trading sleeve, a 0.1 SUI spend cap, one allowed staking validator, and a standing trade rule.
+2. Enter balance and vault status. Reads require no passkey; sensitive actions authenticate with your existing passkey (or enroll on first use). Initially the vault has 1.18 SUI main balance, a 0.02 SUI trading sleeve, a 0.1 SUI spend cap, one allowed staking validator, and a standing trade rule.
 3. Enter reverse a linked list. Expect an unsupported wallet-request error, not generated code.
 4. Enter this exact staking command:
 
@@ -36,7 +36,7 @@ Every check passed at setup time. The standing trade rule expires after 24 hours
 
        swap 0.001 SUI to tUSDC
 
-   It should produce an approved proposal under your standing rule. Click Prepare approved transaction. Authenticate the request, inspect the minimum return and simulated balance changes, and confirm execution with your passkey. Verify the digest. The proceeds stay in the trading sleeve, not the agent wallet.
+   It should produce an approved proposal under your standing rule. Click Prepare approved transaction. Inspect the minimum return and simulated balance changes, and confirm execution with your passkey. Verify the digest. The proceeds stay in the trading sleeve, not the agent wallet.
 6. Enter vault status again. Show that funds are in the vault/staking receipt/trading sleeve while the agent paid only gas.
 7. Optional guardrail: “Please send 0.11 SUI to DemoOwner.” It should be refused because it exceeds the 0.1 SUI payment limit. DemoOwner is your own owner wallet alias.
 8. Optional additional flow after the first swap: swap 0.001 tUSDC to SUI. This direction has no standing rule, so the card requires owner approval using the local owner CLI key, gated by your passkey. Then prepare and confirm execution. This demonstrates one-off approvals versus standing permissions. Rehearse before showing it live.
@@ -48,7 +48,7 @@ Do not claim a stake or trade succeeded unless the UI provides a confirmed diges
 - Staking is a real Sui system-contract integration. Trading is an on-chain testnet mock pool, not a production DEX.
 - Rule limits, price floor, reserve, stake total and position count are enforced by Move. Epoch budgets are not rolling 24-hour budgets.
 - Local WebAuthn protects application actions. The master key is still the CLI owner key, not an on-chain passkey.
-- Liquid staking, lending, explicit blacklists, cross-chain and multi-hop routing remain future work.
+- Explicit recipient blacklists and day/week direct-spending budgets are deployed on the separate demo vault. Liquid staking, lending, cross-chain and multi-hop routing remain future work.
 - The contract prevents unauthorized actions even if the model proposes them; arbitrary natural language is not guaranteed to be interpreted perfectly, so confirm resolved details.
 
 ## Reset after a successful staking rehearsal

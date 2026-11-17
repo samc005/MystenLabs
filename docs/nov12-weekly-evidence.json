@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-11-17T06:34:27.896Z",
+  "network": "testnet",
+  "packageId": "0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f",
+  "vaultId": "0xa963a3a48b259edb408320f1f262032d874d0fef6409eb8b66dce320c9578888",
+  "submitted": false,
+  "calendarPolicy": {
+    "day": "20774",
+    "day_cap": "100000000",
+    "day_spent": "0",
+    "week": "2967",
+    "week_cap": "80000000",
+    "week_spent": "0"
+  },
+  "cases": [
+    {
+      "name": "split payments cannot exceed weekly cap",
+      "passed": true,
+      "expected": "Move abort 32",
+      "reason": "MoveAbort in 2nd command, abort code: 32, in '0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f::spending_vault::enforce_calendar' (instruction 91)"
+    }
+  ]
+}
