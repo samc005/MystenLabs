@@ -14,3 +14,5 @@ The design, security plan, stage-by-stage boundaries, and roadmap are in [docs/D
 ## Where the work is
 
 The wallet MCP prepares testnet transactions and submits them after the isolated signer approves the exact bytes. End-to-end execution through Cipher requires a trusted policy and proposal service to publish approvals. See the [signer setup](wallet-mcp/README.md#isolated-signer).
+
+The [on-chain agent security policy](docs/onchain-agent-security.md) documents mandatory permissions, secure vault creation, migration barriers, and the owner-key trust boundary.

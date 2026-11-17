@@ -168,3 +168,7 @@ Shivakalyan's GitHub account `kalyanrajavaram` published the earlier results in 
 - PR 45: policy package deployed as team testnet v4, with 78 new Move tests and 114 total at that point; covers spend/recipient/stake policies, single-use payment intents and standing trade rules.
 
 These are published historical results, not a claim that the full modern AI/passkey/signer flow was executed then. Current automated and deployed-policy evidence is listed separately above. If a separate November 12 end-to-end run exists, its private/unpublished report still needs to be supplied by its owner; it cannot be reconstructed or attributed from these records.
+
+## Current security posture
+
+The [mandatory on-chain agent policy](onchain-agent-security.md) supersedes the earlier permissive demo settings. All three agent action categories are now disabled on the separate testnet vault. Owner-only functions remain available. Earlier evidence is retained with its original policy configuration; use the current security verification script for the active deny-all configuration.

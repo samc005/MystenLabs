@@ -25,6 +25,7 @@ import {
   setRecipientAllowed,
   setRecipientBlocked,
   setCalendarPolicy,
+  setAgentSecurityPolicy,
   setSpendPolicy,
   setStakePolicy,
   setTradeRule,
@@ -58,6 +59,8 @@ const USAGE = `Usage: npm run owner -- <command>
   clear-spend-policy                     remove the spending cap and allowlist requirement
   allow-recipient <address>              add to the recipient allowlist
   disallow-recipient <address>
+  agent-security <payments:on|off> <staking:on|off> <trading:on|off>
+                                         install mandatory on-chain permissions; off denies an action
   calendar-policy <sui-per-day> <sui-per-week>  fixed UTC/Unix seven-day windows
   block-recipient <address>              deny even an approved payment
   unblock-recipient <address>
@@ -223,6 +226,11 @@ async function main() {
         `${allow ? "Allowed" : "Removed"} recipient ${recipient}.`,
         await setRecipientAllowed(ctx, recipient, allow),
       );
+      return;
+    }
+    case "agent-security": {
+      if (args.length !== 3 || args.some(value => value !== "on" && value !== "off")) throw new Error(USAGE);
+      printReceipt("Mandatory on-chain agent permissions set. Prior package entry points are frozen.", await setAgentSecurityPolicy(ctx, args[0] === "on", args[1] === "on", args[2] === "on"));
       return;
     }
     case "calendar-policy": {
