@@ -3,6 +3,7 @@ import { approveProposalWithEnrollment, hashProposal } from "@/lib/passkey";
 
 import { useCallback, useEffect, useState } from "react";
 import { explorerTx, formatUnits, isSpendProposal, type Proposal } from "@/lib/proposals";
+import type { VaultReadiness } from "@/lib/server/vault-readiness";
 
 interface Props {
   id: string;
@@ -35,14 +36,16 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [acting, setActing] = useState<"approve" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [ownerReady, setOwnerReady] = useState<VaultReadiness | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async () => {
     try {
       const response = await fetch(`/api/proposals/${id}`, { cache: "no-store" });
-      const body = (await response.json()) as { proposal?: Proposal; error?: string };
+      const body = (await response.json()) as { proposal?: Proposal; error?: string; vault?: VaultReadiness };
       if (!response.ok || !body.proposal) throw new Error(body.error ?? `Request failed (${response.status})`);
       setProposal(body.proposal);
+      if (body.vault) setOwnerReady(body.vault);
       setLoadError(null);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error));
@@ -52,6 +55,22 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/wallets", { cache: "no-store" });
+        const body = (await response.json()) as { status?: { vault?: VaultReadiness } };
+        if (!cancelled && body.status?.vault) setOwnerReady(body.status.vault);
+      } catch {
+        // Proposal load still works; approve stays gated until readiness is known.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Tick the countdown, and keep the status fresh while the trade is still in flight.
   const live = proposal?.status === "pending" || proposal?.status === "approved";
@@ -98,12 +117,13 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
   const auto = !spend && p.auto === true;
   const approvalLabel = p.status === "pending" ? "Approve within" : "Cipher must run it within";
 
+  const canDecide = acting === null && ownerReady?.ownerActionsReady === true;
   const actions = (
     <div className="proposal-actions">
-      <button onClick={() => void decide("approve")} disabled={acting !== null}>
+      <button onClick={() => void decide("approve")} disabled={!canDecide} title={ownerReady && !ownerReady.ownerActionsReady ? ownerReady.detail : undefined}>
         {acting === "approve" ? "Signing…" : spend ? "Approve payment" : "Approve trade"}
       </button>
-      <button className="ghost" onClick={() => void decide("reject")} disabled={acting !== null}>
+      <button className="ghost" onClick={() => void decide("reject")} disabled={!canDecide}>
         {acting === "reject" ? "Rejecting…" : "Reject"}
       </button>
     </div>
@@ -159,8 +179,11 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
           {p.status === "pending" && (
             <>
               <p className="proposal-note">
-                Approving signs an on-chain approval from your owner key for exactly this recipient and amount. Cipher can use it once and cannot change either.
+                Approving signs an on-chain approval from your owner key (Sui CLI keystore), not the agent wallet. Cipher can use it once and cannot change the recipient or amount.
               </p>
+              {ownerReady && !ownerReady.ownerActionsReady && (
+                <p className="proposal-error">{ownerReady.detail}</p>
+              )}
               {actions}
             </>
           )}
@@ -197,9 +220,12 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
           {p.status === "pending" && (
             <>
               <p className="proposal-note">
-                Approving signs an on-chain intent from your owner key for exactly this trade. Cipher can run it once and cannot change the amounts. If the swap
+                Approving signs an on-chain intent from your owner key (Sui CLI keystore), not the agent wallet. Cipher can run it once and cannot change the amounts. If the swap
                 returns less than the minimum, the contract rejects it.
               </p>
+              {ownerReady && !ownerReady.ownerActionsReady && (
+                <p className="proposal-error">{ownerReady.detail}</p>
+              )}
               {actions}
             </>
           )}

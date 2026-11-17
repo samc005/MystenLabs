@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { readFile, readdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { PROPOSAL_ID, isSpendProposal, type Proposal } from "@/lib/proposals";
+import { getVaultReadiness } from "./vault-readiness";
 import { walletMcpDir } from "./wallet-mcp";
 
 function proposalsDir(): string {
@@ -62,6 +63,10 @@ export async function decideProposal(id: string, action: "approve" | "reject"): 
   if (!before) return { ok: false, status: 404, error: `No proposal ${id}.` };
   if (before.status !== "pending") {
     return { ok: false, status: 409, error: `This proposal is ${before.status}, so it can no longer be ${action}d.` };
+  }
+  const readiness = await getVaultReadiness();
+  if (!readiness.ownerActionsReady) {
+    return { ok: false, status: 409, error: readiness.detail };
   }
   if (deciding.has(id)) return { ok: false, status: 409, error: "A decision on this proposal is already in progress." };
   deciding.add(id);

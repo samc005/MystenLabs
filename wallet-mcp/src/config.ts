@@ -50,25 +50,47 @@ export interface VaultConfig {
 }
 
 /**
- * Testnet deployment of my_counter::spending_vault. These are public on-chain IDs,
- * not secrets. Override with SUI_VAULT_PACKAGE_ID, SUI_VAULT_ID, SUI_VAULT_AGENT_CAP_ID.
+ * Shared example deployment of my_counter::spending_vault. Public on-chain IDs, not secrets.
+ * Local owner demos should set SUI_VAULT_PACKAGE_ID, SUI_VAULT_ID, and SUI_VAULT_AGENT_CAP_ID
+ * to a vault whose OwnerCap lives in the local Sui CLI keystore. Using these defaults without
+ * that OwnerCap lets the agent propose spends that this machine cannot approve.
  *
  * packageId is the latest upgrade (v3, adds owner-approved swaps; v2 added staking). Move
  * calls must target the version that has the function; the vault and caps keep their
  * original IDs across upgrades.
  */
-const DEFAULT_VAULT: VaultConfig = {
+export const DEFAULT_VAULT: VaultConfig = {
   packageId: "0x7e1941bb666e3de2fe92891d77dcbba8d33825816f16b89314d41342997790e9",
   vaultId: "0xed4a0431aed6b0ff544dbfa7796fc57df573754978be85d0d4651a2f60100832",
   agentCapId: "0xcacfc4e834d9ea96aacb799843c88ebd0da5be3859744f9ac262b0828e21828d",
 };
 
-export function vaultConfig(): VaultConfig {
-  return {
-    packageId: process.env.SUI_VAULT_PACKAGE_ID ?? DEFAULT_VAULT.packageId,
-    vaultId: process.env.SUI_VAULT_ID ?? DEFAULT_VAULT.vaultId,
-    agentCapId: process.env.SUI_VAULT_AGENT_CAP_ID ?? DEFAULT_VAULT.agentCapId,
-  };
+const VAULT_ENV_KEYS = ["SUI_VAULT_PACKAGE_ID", "SUI_VAULT_ID", "SUI_VAULT_AGENT_CAP_ID"] as const;
+
+/** True when all three vault env overrides are set (local/owned deployment). */
+export function hasExplicitVaultConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return VAULT_ENV_KEYS.every((key) => Boolean(env[key]?.trim()));
+}
+
+/**
+ * Resolve package/vault/AgentCap IDs. Partial overrides fail closed: set all three env vars
+ * or none. Omitting them keeps the shared DEFAULT_VAULT for read-only/verification scripts.
+ */
+export function vaultConfig(env: NodeJS.ProcessEnv = process.env): VaultConfig {
+  const values = VAULT_ENV_KEYS.map((key) => env[key]?.trim() || "");
+  const setCount = values.filter(Boolean).length;
+  if (setCount > 0 && setCount < VAULT_ENV_KEYS.length) {
+    const missing = VAULT_ENV_KEYS.filter((key) => !env[key]?.trim());
+    throw new Error(
+      `Incomplete vault overrides. Set all of ${VAULT_ENV_KEYS.join(", ")}, or unset them to use the shared default vault. Missing: ${missing.join(", ")}.`,
+    );
+  }
+  if (setCount === VAULT_ENV_KEYS.length) {
+    return { packageId: values[0]!, vaultId: values[1]!, agentCapId: values[2]! };
+  }
+  return { ...DEFAULT_VAULT };
 }
 
 export interface KnownCoin {

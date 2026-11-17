@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import { createSuiClient, getSuiBalance } from "@/lib/sui";
+import { getVaultReadiness, type VaultReadiness } from "./vault-readiness";
 
 export const WALLET_ROLES = ["sender", "receiver"] as const;
 export type LocalWalletRole = (typeof WALLET_ROLES)[number];
@@ -22,6 +23,7 @@ export interface WalletMcpStatus {
   installed: boolean;
   built: boolean;
   apiKey: boolean;
+  vault: VaultReadiness;
 }
 
 export function walletMcpDir(): string {
@@ -32,7 +34,7 @@ export function walletMcpEntry(): string {
   return path.join(walletMcpDir(), "build", "index.js");
 }
 
-export function walletMcpStatus(): WalletMcpStatus {
+export async function walletMcpStatus(): Promise<WalletMcpStatus> {
   const dir = walletMcpDir();
   return {
     dir,
@@ -40,6 +42,7 @@ export function walletMcpStatus(): WalletMcpStatus {
     installed: existsSync(path.join(dir, "node_modules")),
     built: existsSync(walletMcpEntry()),
     apiKey: Boolean(process.env.ANTHROPIC_API_KEY),
+    vault: await getVaultReadiness(),
   };
 }
 

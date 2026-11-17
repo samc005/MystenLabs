@@ -59,36 +59,76 @@ export interface OwnerContext {
   ownerCapId: string;
 }
 
+export type OwnerCapProbe =
+  | { ok: true; address: string; ownerCapId: string; vaultId: string; keystore: string }
+  | { ok: false; vaultId: string; keystore: string; detail: string };
+
+/** Read-only probe: does the configured keystore hold OwnerCap for the configured vault? */
+export async function probeOwnerCap(
+  client: SuiGrpcClient,
+  network: SuiNetwork = "testnet",
+): Promise<OwnerCapProbe> {
+  const { vaultId } = vaultConfig();
+  const keystore = keystorePath();
+  try {
+    assertTestnet(network);
+    const { object: vault } = await client.getObject({ objectId: vaultId });
+    if (!vault?.type) {
+      return { ok: false, vaultId, keystore, detail: `Vault ${vaultId} was not found on ${network}.` };
+    }
+    const ownerCapType = vault.type.replace(/::spending_vault::Vault$/, "::spending_vault::OwnerCap");
+    for (const signer of await loadKeystore()) {
+      const address = signer.toSuiAddress();
+      let cursor: string | null = null;
+      do {
+        const page: Awaited<ReturnType<SuiGrpcClient["listOwnedObjects"]>> = await client.listOwnedObjects({
+          owner: address,
+          type: ownerCapType,
+          include: { json: true },
+          cursor,
+        });
+        for (const object of page.objects) {
+          const json = (object as { json?: Record<string, unknown> | null }).json;
+          if (json && normalizeSuiAddress(String(json.vault_id)) === normalizeSuiAddress(vaultId)) {
+            return { ok: true, address, ownerCapId: object.objectId, vaultId, keystore };
+          }
+        }
+        cursor = page.hasNextPage ? page.cursor : null;
+      } while (cursor);
+    }
+    return {
+      ok: false,
+      vaultId,
+      keystore,
+      detail:
+        `No key in ${keystore} holds the OwnerCap for vault ${vaultId}. ` +
+        `Use the Sui CLI profile that created the vault, or set SUI_VAULT_* to a vault you own.`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      vaultId,
+      keystore,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 /** Finds the keystore key that holds this vault's OwnerCap. */
 export async function loadOwnerContext(client: SuiGrpcClient, network: SuiNetwork): Promise<OwnerContext> {
-  assertTestnet(network);
-  const { vaultId } = vaultConfig();
-  const { object: vault } = await client.getObject({ objectId: vaultId });
-  const ownerCapType = vault.type.replace(/::spending_vault::Vault$/, "::spending_vault::OwnerCap");
-
-  for (const signer of await loadKeystore()) {
-    const address = signer.toSuiAddress();
-    let cursor: string | null = null;
-    do {
-      const page: Awaited<ReturnType<SuiGrpcClient["listOwnedObjects"]>> = await client.listOwnedObjects({
-        owner: address,
-        type: ownerCapType,
-        include: { json: true },
-        cursor,
-      });
-      for (const object of page.objects) {
-        const json = (object as { json?: Record<string, unknown> | null }).json;
-        if (json && normalizeSuiAddress(String(json.vault_id)) === normalizeSuiAddress(vaultId)) {
-          return { client, network, signer, address, ownerCapId: object.objectId };
-        }
-      }
-      cursor = page.hasNextPage ? page.cursor : null;
-    } while (cursor);
+  const probe = await probeOwnerCap(client, network);
+  if (!probe.ok) throw new Error(probe.detail);
+  const signer = (await loadKeystore()).find((key) => key.toSuiAddress() === probe.address);
+  if (!signer) {
+    throw new Error(`OwnerCap probe matched ${probe.address}, but that key is no longer in ${probe.keystore}.`);
   }
-  throw new Error(
-    `No key in ${keystorePath()} holds the OwnerCap for vault ${vaultId}. ` +
-      `Run this from the machine and Sui CLI profile that created the vault.`,
-  );
+  return {
+    client,
+    network,
+    signer,
+    address: probe.address,
+    ownerCapId: probe.ownerCapId,
+  };
 }
 
 export interface OwnerReceipt {

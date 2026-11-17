@@ -50,8 +50,8 @@ export function WalletPanel({ wallets, status, loading, onRefresh }: Props) {
         </button>
       </div>
       <p className="muted">
-        Read from <code>wallet-mcp/.wallet</code>. These are the keys the MCP server signs with. Balances come from
-        testnet.
+        Public agent addresses from <code>SUI_ADDRESS</code> / <code>SUI_RECEIVER_ADDRESS</code>. The agent key signs
+        gas; vault spends still need OwnerCap approval on this machine. Balances come from testnet.
       </p>
 
       {wallets.length === 0 && !loading && (
@@ -90,7 +90,20 @@ export function WalletPanel({ wallets, status, loading, onRefresh }: Props) {
           <li className={status.apiKey ? "pass" : "fail"}>
             Natural-language translation {status.apiKey ? "configured" : "needs ANTHROPIC_API_KEY; explicit commands still work"}
           </li>
+          <li className={status.vault.vaultExplicit ? "pass" : "fail"}>
+            {status.vault.vaultExplicit
+              ? "Vault IDs set in .env.local (owned deployment)"
+              : "Vault IDs missing — set SUI_VAULT_PACKAGE_ID, SUI_VAULT_ID, SUI_VAULT_AGENT_CAP_ID"}
+          </li>
+          <li className={status.vault.ownerActionsReady ? "pass" : "fail"} title={status.vault.detail}>
+            {status.vault.ownerActionsReady
+              ? "OwnerCap ready for approve / fund / allowlist"
+              : "Owner actions blocked — see vault setup detail below"}
+          </li>
         </ul>
+      )}
+      {status && !status.vault.ownerActionsReady && (
+        <p className="empty">{status.vault.detail}</p>
       )}
     </section>
   );

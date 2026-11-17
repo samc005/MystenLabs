@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { consumeApproval, passkeyStatus } from "@/lib/server/passkey";
 import { rejectNonLocal } from "@/lib/server/local-only";
 import { decideProposal, readProposal } from "@/lib/server/proposals";
+import { getVaultReadiness } from "@/lib/server/vault-readiness";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,9 +13,9 @@ export async function GET(request: Request, { params }: Context) {
   const rejected = rejectNonLocal(request);
   if (rejected) return rejected;
   const { id } = await params;
-  const proposal = await readProposal(id);
+  const [proposal, vault] = await Promise.all([readProposal(id), getVaultReadiness()]);
   if (!proposal) return Response.json({ error: `No proposal ${id}.` }, { status: 404 });
-  return Response.json({ proposal });
+  return Response.json({ proposal, vault });
 }
 
 /**
