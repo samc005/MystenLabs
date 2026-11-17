@@ -124,6 +124,7 @@ export interface VaultStatus {
   allowedRecipients: string[];
   blockedRecipients: string[];
   calendarPolicy: Record<string, unknown> | null;
+  agentSecurityPolicy: Record<string, unknown> | null;
   stakePolicy: StakePolicyInfo | null;
   /** Owner-approved one-off payments the agent may still execute. */
   spendIntents: SpendIntentInfo[];
@@ -212,6 +213,7 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   const blockedRecipients: string[] = [];
   let calendarPolicyFieldId: string | null = null;
   let migrationFieldId: string | null = null;
+  let securityFieldId: string | null = null;
   const spendIntentIds: string[] = [];
   let spendPolicyFieldId: string | null = null;
   let stakePolicyFieldId: string | null = null;
@@ -242,6 +244,8 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
         intentIds.push(entry.childId);
       } else if (entry.name.type.includes("::spending_vault::BlockedRecipient")) {
         blockedRecipients.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
+      } else if (entry.name.type.includes("::spending_vault::AgentSecurityPolicyKey")) {
+        securityFieldId = entry.fieldId;
       } else if (entry.name.type.includes("::spending_vault::PolicyMigrationKey")) {
         migrationFieldId = entry.fieldId;
       } else if (entry.name.type.includes("::spending_vault::CalendarPolicyKey")) {
@@ -312,7 +316,7 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   }
 
   // A dynamic field's JSON is { id, name, value }; for struct values `value` holds the fields.
-  const policyIds = [spendPolicyFieldId, stakePolicyFieldId, calendarPolicyFieldId, migrationFieldId].filter((id): id is string => id !== null);
+  const policyIds = [spendPolicyFieldId, stakePolicyFieldId, calendarPolicyFieldId, migrationFieldId, securityFieldId].filter((id): id is string => id !== null);
   const policyObjects = new Map<string, Record<string, unknown>>();
   if (policyIds.length > 0 || spendIntentIds.length > 0 || ruleFields.length > 0) {
     const { objects } = await client.getObjects({
@@ -398,6 +402,8 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
     blockedRecipients,
     calendarPolicy: valueOf(calendarPolicyFieldId),
     ...(valueOf(migrationFieldId) ? { paused: valueOf(migrationFieldId)!.paused === true } : {}),
+    agentSecurityPolicy: valueOf(securityFieldId),
+    ...(valueOf(securityFieldId) ? { paused: valueOf(securityFieldId)!.paused === true } : {}),
     stakePolicy,
     spendIntents,
     tradeRules,
@@ -467,6 +473,13 @@ export function classifySpend(
   amountMist: bigint,
 ): { direct: true } | { direct: false; reason: string } {
   const sui = (mist: bigint) => `${formatUnits(mist, SUI_DECIMALS)} SUI`;
+  if (status.agentSecurityPolicy && status.agentSecurityPolicy.payments !== true) {
+    return { direct: false, reason: "Payments are disabled by the owner's on-chain agent policy" };
+  }
+  if (status.agentSecurityPolicy && (!status.spendPolicy?.enforceRecipients || !status.calendarPolicy)) {
+    return { direct: false, reason: "Mandatory on-chain payment policy is not configured" };
+  }
+
   if (amountMist > status.perTxLimitMist) {
     return { direct: false, reason: `${sui(amountMist)} is over the per-spend limit of ${sui(status.perTxLimitMist)}` };
   }
@@ -503,6 +516,7 @@ export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vau
     `Package: ${config.packageId}`,
     `Balance: ${sui(status.balanceMist)}`,
     `Blocked recipients: ${status.blockedRecipients.join(", ") || "none"}`,
+    `Agent security policy: ${status.agentSecurityPolicy ? JSON.stringify(status.agentSecurityPolicy) : "legacy (not enabled)"}`,
     `Calendar policy: ${status.calendarPolicy ? JSON.stringify(status.calendarPolicy) : "none"}`,
     `Per-spend limit: ${sui(status.perTxLimitMist)}`,
     `Total spent so far: ${sui(status.totalSpentMist)}`,

@@ -146,3 +146,29 @@ Values are examples, not automatically selected owner policy. These commands sig
 For device rehearsal: open /chat, run balance without a prompt, prepare a permitted small transfer, inspect the canonical summary, and initiate passkey approval. Complete the physical authenticator prompt yourself. Cancel before submission if only rehearsing authentication. Test locked access and then unlock using the existing security controls. A software test cannot establish physical-device success.
 
 Information retrieval, volatility optimization and streaming micropayments were open ideas, not selected action items. Native staking and testnet mock trading remain the chosen basic activities.
+
+## Confirmed testnet rollout — November 16 (Pacific)
+
+The separate demo package is now version 2 at `0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f`. The existing demo vault was migrated in place. Only the gitignored local package override changed; the team deployment and committed default IDs were not changed.
+
+- [Rollout receipts and final settings](nov12-rollout.json): successful upgrade, migration, synthetic-recipient blacklist, temporary weekly test setting, and restoration to 0.1 SUI/day and 0.5 SUI/week.
+- [Five deployed-policy simulations](nov12-deployed-evidence.json): permitted current payment; blacklist rejection; current legacy-entry rejection; actual original-package rejection; split payments exceeding the daily budget.
+- [Weekly simulation](nov12-weekly-evidence.json): temporarily tightened to 0.08 SUI/week to isolate the weekly failure from the daily and epoch caps, then restored to 0.5 SUI/week. Exact EWeekLimit observed.
+- Real-device WebAuthn authentication passed on /passkeys: Show registered devices displayed Device 1 after the authenticator interaction. No credentials were changed. This verifies the real authenticator/backend path without spending.
+- All attempted payments in this rollout were simulations. The only submitted transactions upgraded the package and changed owner-controlled policy.
+
+Earlier-result search: GitHub issues 1, 2, 9 and 40 and their comments were checked. [Issue 1's linked blockchain subteam document](https://docs.google.com/document/d/1OWXRmBkxUweuW5GbSM0Hq6p3DC7LfuFWRBKgvXUPhgs/edit) identifies Shivakalyan as its last editor, but contains setup instructions rather than end-to-end test receipts. [Sprint status](https://docs.google.com/document/d/1Cuhp4lk6LG6RCqeeNGo_HNsV-tj81vR30M1CuiGj9W0/edit) records wallet/MCP capabilities, not those earlier results. The user has been asked for the specific results source; no unverified attribution is made.
+
+### Published earlier results located
+
+Shivakalyan's GitHub account `kalyanrajavaram` published the earlier results in [PR 20](https://github.com/samc005/MystenLabs/pull/20), [PR 21](https://github.com/samc005/MystenLabs/pull/21), [PR 43](https://github.com/samc005/MystenLabs/pull/43) and [PR 45](https://github.com/samc005/MystenLabs/pull/45). These are now collected here for the meeting action to find/share existing results:
+
+- PRs 20/21: manually created/funded a wallet, sent 0.01 testnet SUI, and confirmed it on Suiscan. [DESIGN.md section 3](DESIGN.md) records digest `CuTuomwdVdw4kaJ7rcdCddK4LSuGaa5vA7wLrPvuDcEp`, gas 0.001988 SUI, sender balance 0.988012 SUI, receiver balance 0.01 SUI. The recorded date is October 13; the script called transfer code directly and did not exercise MCP or the model.
+- PR 43: owner-approved swap package deployed as team testnet v3, with 35 new contract tests and mock-pool integration. The PR reports 36 total tests at that point.
+- PR 45: policy package deployed as team testnet v4, with 78 new Move tests and 114 total at that point; covers spend/recipient/stake policies, single-use payment intents and standing trade rules.
+
+These are published historical results, not a claim that the full modern AI/passkey/signer flow was executed then. Current automated and deployed-policy evidence is listed separately above. If a separate November 12 end-to-end run exists, its private/unpublished report still needs to be supplied by its owner; it cannot be reconstructed or attributed from these records.
+
+## Current security posture
+
+The [mandatory on-chain agent policy](onchain-agent-security.md) supersedes the earlier permissive demo settings. All three agent action categories are now disabled on the separate testnet vault. Owner-only functions remain available. Earlier evidence is retained with its original policy configuration; use the current security verification script for the active deny-all configuration.

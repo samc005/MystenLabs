@@ -564,3 +564,12 @@ export async function setRecipientBlocked(ctx: OwnerContext, recipient: string, 
     arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.address(requireAddress(recipient))] });
   return execute(ctx, tx);
 }
+
+/** On-chain permissions are owner-controlled, never a model/MCP argument. */
+export async function setAgentSecurityPolicy(ctx: OwnerContext, payments: boolean, staking: boolean, trading: boolean): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({ target: `${packageId}::spending_vault::set_agent_security_policy`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.bool(payments), tx.pure.bool(staking), tx.pure.bool(trading)] });
+  return execute(ctx, tx);
+}

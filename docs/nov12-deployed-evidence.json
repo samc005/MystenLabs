@@ -1,0 +1,47 @@
+{
+  "checkedAt": "2026-11-17T06:36:36.862Z",
+  "network": "testnet",
+  "packageId": "0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f",
+  "vaultId": "0xa963a3a48b259edb408320f1f262032d874d0fef6409eb8b66dce320c9578888",
+  "submitted": false,
+  "calendarPolicy": {
+    "day": "20774",
+    "day_cap": "100000000",
+    "day_spent": "0",
+    "week": "2967",
+    "week_cap": "500000000",
+    "week_spent": "0"
+  },
+  "cases": [
+    {
+      "name": "current clock-aware payment inside policy",
+      "passed": true,
+      "expected": "success",
+      "reason": ""
+    },
+    {
+      "name": "blacklist rejects clock-aware payment",
+      "passed": true,
+      "expected": "Move abort 29",
+      "reason": "MoveAbort in 1st command, abort code: 29, in '0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f::spending_vault::spend_impl' (instruction 15)"
+    },
+    {
+      "name": "current legacy payment requires the clock",
+      "passed": true,
+      "expected": "Move abort 30",
+      "reason": "MoveAbort in 1st command, abort code: 30, in '0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f::spending_vault::spend' (instruction 15)"
+    },
+    {
+      "name": "old deployed package cannot bypass migration",
+      "passed": true,
+      "expected": "Move abort 1",
+      "reason": "MoveAbort in 1st command, abort code: 1, in '0xfd1b7414378196394b9a62d3c04a89205c876a78a34cef8e2640fcc4dcb4c63c::spending_vault::spend' (instruction 47)"
+    },
+    {
+      "name": "split payments cannot exceed daily cap",
+      "passed": true,
+      "expected": "Move abort 31",
+      "reason": "MoveAbort in 2nd command, abort code: 31, in '0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f::spending_vault::enforce_calendar' (instruction 73)"
+    }
+  ]
+}

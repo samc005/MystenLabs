@@ -1,0 +1,23 @@
+{
+  "network": "testnet",
+  "packageId": "0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f",
+  "originalPackageId": "0xfd1b7414378196394b9a62d3c04a89205c876a78a34cef8e2640fcc4dcb4c63c",
+  "vaultId": "0xa963a3a48b259edb408320f1f262032d874d0fef6409eb8b66dce320c9578888",
+  "upgradeDigest": "AhB98W8N8WLutJYhZUXbxqCFKZrWMZdkDM4wCvbaPCqU",
+  "migrationDigest": "89wuHLouj2mgn6D1193RNYyi5KZdL643YMZjru8dSByF",
+  "blacklistDigest": "HxMGgZdytXi84UYFNJgzX1pnGTRWQhFwK6FnN1sJEhoe",
+  "temporaryWeeklyPolicyDigest": "7otr1rtDyjF3xBWo18oUmFF8uxnWzPQuhdV2aSe2AHfe",
+  "finalPolicyDigest": "3qwd4UK3QtTwXQThjtxuKLEisfzHcYyhgGYLi7yrHdfT",
+  "finalPolicy": {
+    "dayCapMist": "100000000",
+    "weekCapMist": "500000000",
+    "blockedRecipient": "0x0000000000000000000000000000000000000000000000000000000000000001"
+  },
+  "physicalPasskeyCheck": {
+    "result": "passed",
+    "surface": "localhost:3000/passkeys",
+    "action": "Show registered devices",
+    "observation": "After real authenticator interaction, Device 1 was displayed. No credential was added, removed or recovered."
+  },
+  "paymentsSubmitted": false
+}

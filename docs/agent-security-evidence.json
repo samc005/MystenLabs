@@ -1,0 +1,57 @@
+{
+  "checkedAt": "2026-11-17T06:56:43.273Z",
+  "network": "testnet",
+  "packageId": "0x24e3bd9edfdf9284b3486ce3c96e1a68b8ebff8e688f12de12ef7ca86106ed4f",
+  "vaultId": "0xa963a3a48b259edb408320f1f262032d874d0fef6409eb8b66dce320c9578888",
+  "policy": {
+    "paused": false,
+    "payments": false,
+    "staking": false,
+    "trading": false
+  },
+  "submitted": false,
+  "cases": [
+    {
+      "name": "rogue agent direct payment",
+      "passed": true,
+      "expectedAbort": 33,
+      "reason": "MoveAbort in 1st command, abort code: 33, in '0x24e3bd9edfdf9284b3486ce3c96e1a68b8ebff8e688f12de12ef7ca86106ed4f::spending_vault::assert_agent_permission' (instruction 44)"
+    },
+    {
+      "name": "rogue agent owner-approved payment path",
+      "passed": true,
+      "expectedAbort": 33,
+      "reason": "MoveAbort in 1st command, abort code: 33, in '0x24e3bd9edfdf9284b3486ce3c96e1a68b8ebff8e688f12de12ef7ca86106ed4f::spending_vault::assert_agent_permission' (instruction 44)"
+    },
+    {
+      "name": "rogue agent staking",
+      "passed": true,
+      "expectedAbort": 33,
+      "reason": "MoveAbort in 1st command, abort code: 33, in '0x24e3bd9edfdf9284b3486ce3c96e1a68b8ebff8e688f12de12ef7ca86106ed4f::spending_vault::assert_agent_permission' (instruction 44)"
+    },
+    {
+      "name": "rogue agent standing-rule swap",
+      "passed": true,
+      "expectedAbort": 33,
+      "reason": "MoveAbort in 1st command, abort code: 33, in '0x24e3bd9edfdf9284b3486ce3c96e1a68b8ebff8e688f12de12ef7ca86106ed4f::spending_vault::assert_agent_permission' (instruction 44)"
+    },
+    {
+      "name": "rogue agent owner-intent swap path",
+      "passed": true,
+      "expectedAbort": 33,
+      "reason": "MoveAbort in 1st command, abort code: 33, in '0x24e3bd9edfdf9284b3486ce3c96e1a68b8ebff8e688f12de12ef7ca86106ed4f::spending_vault::assert_agent_permission' (instruction 44)"
+    },
+    {
+      "name": "original package bypass",
+      "passed": true,
+      "expectedAbort": 1,
+      "reason": "MoveAbort in 1st command, abort code: 1, in '0xfd1b7414378196394b9a62d3c04a89205c876a78a34cef8e2640fcc4dcb4c63c::spending_vault::spend' (instruction 47)"
+    },
+    {
+      "name": "version-two package bypass",
+      "passed": true,
+      "expectedAbort": 1,
+      "reason": "MoveAbort in 1st command, abort code: 1, in '0x52119e23e7bbf9e6c3e584686f9f682b9cc46c18cb722a22c33ddb2049d02c8f::spending_vault::spend_impl' (instruction 63)"
+    }
+  ]
+}
