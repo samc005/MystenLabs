@@ -8,8 +8,12 @@ The design, security plan, stage-by-stage boundaries, and roadmap are in [docs/D
 
 | Directory | What it is |
 |---|---|
-| [hello-mcp](hello-mcp/README.md) | A one-tool MCP server (`ping`). The AI-track exercise. |
-| [wallet-mcp](wallet-mcp/README.md) | Sui testnet client and the wallet MCP server (`get_balance`, `transfer_sui`). |
+| [demo-ui](demo-ui/README.md) | Browser wallet and local Cipher chat, passkey authorization, and proposal workflow. |
+| [wallet-mcp](wallet-mcp/README.md) | Sui testnet tools, transaction preparation, isolated signer, and CLI scripts. |
+| [my_counter](my_counter/) | Move spending vault and its policy regression tests. |
+| [testnet_pool](testnet_pool/) | Move test token and fixed-rate swap pool. |
+
+See [the project structure](docs/project-structure.md) for module responsibilities and [the authenticated workflow](docs/authenticated-workflow.md) for setup and verification.
 
 ## Where the work is
 
