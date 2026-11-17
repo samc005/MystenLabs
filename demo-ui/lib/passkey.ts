@@ -81,3 +81,9 @@ export async function recoverPasskeys(code: string): Promise<string> {
   const result = await json<{ recoveryToken: string }>("/api/passkey/recover", { method: "POST", body: JSON.stringify({ code }) });
   return result.recoveryToken;
 }
+
+/** First owner action may be a proposal decision rather than a transaction. */
+export async function approveProposalWithEnrollment(proposalHash: string): Promise<{ approvalId: string }> {
+  if (!(await getPasskeyStatus()).registered) await registerPasskey();
+  return approveProposal(proposalHash);
+}

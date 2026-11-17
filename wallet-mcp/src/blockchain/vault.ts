@@ -211,6 +211,7 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   const allowedRecipients: string[] = [];
   const blockedRecipients: string[] = [];
   let calendarPolicyFieldId: string | null = null;
+  let migrationFieldId: string | null = null;
   const spendIntentIds: string[] = [];
   let spendPolicyFieldId: string | null = null;
   let stakePolicyFieldId: string | null = null;
@@ -241,6 +242,8 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
         intentIds.push(entry.childId);
       } else if (entry.name.type.includes("::spending_vault::BlockedRecipient")) {
         blockedRecipients.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
+      } else if (entry.name.type.includes("::spending_vault::PolicyMigrationKey")) {
+        migrationFieldId = entry.fieldId;
       } else if (entry.name.type.includes("::spending_vault::CalendarPolicyKey")) {
         calendarPolicyFieldId = entry.fieldId;
       } else if (entry.name.type.includes("::spending_vault::AllowedRecipient")) {
@@ -309,7 +312,7 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   }
 
   // A dynamic field's JSON is { id, name, value }; for struct values `value` holds the fields.
-  const policyIds = [spendPolicyFieldId, stakePolicyFieldId, calendarPolicyFieldId].filter((id): id is string => id !== null);
+  const policyIds = [spendPolicyFieldId, stakePolicyFieldId, calendarPolicyFieldId, migrationFieldId].filter((id): id is string => id !== null);
   const policyObjects = new Map<string, Record<string, unknown>>();
   if (policyIds.length > 0 || spendIntentIds.length > 0 || ruleFields.length > 0) {
     const { objects } = await client.getObjects({
@@ -394,6 +397,7 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
     allowedRecipients,
     blockedRecipients,
     calendarPolicy: valueOf(calendarPolicyFieldId),
+    ...(valueOf(migrationFieldId) ? { paused: valueOf(migrationFieldId)!.paused === true } : {}),
     stakePolicy,
     spendIntents,
     tradeRules,

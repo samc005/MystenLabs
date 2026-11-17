@@ -1,5 +1,5 @@
 "use client";
-import { approveProposal, hashProposal } from "@/lib/passkey";
+import { approveProposalWithEnrollment, hashProposal } from "@/lib/passkey";
 
 import { useCallback, useEffect, useState } from "react";
 import { explorerTx, formatUnits, isSpendProposal, type Proposal } from "@/lib/proposals";
@@ -69,7 +69,7 @@ export function ProposalCard({ id, onApproved, onRejected }: Props) {
     setActing(action);
     setActionError(null);
     try {
-      const { approvalId } = await approveProposal(await hashProposal({ action: "proposal-decision", id, decision: action, proposal }));
+      const { approvalId } = await approveProposalWithEnrollment(await hashProposal({ action: "proposal-decision", id, decision: action, proposal }));
       const response = await fetch(`/api/proposals/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

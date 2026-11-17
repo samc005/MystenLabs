@@ -105,8 +105,8 @@ See today-demo.md for the exact presentation commands. Deployment receipts, conf
 
 | Check | Result |
 | --- | --- |
-| `sui move test` in my_counter | 133 passed, including 11 new blacklist/calendar regressions |
-| UI/backend tests | 20 passed, including chat without approval, locked chat and malformed requests |
+| `sui move test` in my_counter | 136 passed, including blacklist/calendar and migration regressions |
+| UI/backend tests | 22 passed, including first-action proposal enrollment, chat without approval, locked chat and malformed requests |
 | MCP/signer tests | 3 passed on final source |
 | TypeScript | wallet-mcp build and demo-ui typecheck pass |
 | Live natural-language -> direct PTB -> testnet simulation | Exact `spending_vault` EOverLimit (2) and EValidatorNotAllowed (5), bypassing client policy; no signature/submission |
@@ -141,7 +141,7 @@ The added contract functions are not deployed by a Git change. Review/publish or
     npm run owner:demo --prefix wallet-mcp -- block-recipient <full-address>
     npm run owner:demo --prefix wallet-mcp -- unblock-recipient <full-address>
 
-Values are examples, not automatically selected owner policy. These commands sign policy changes; they were not run during verification. An upgrade requires the appropriate UpgradeCap. Existing vault layouts and policy structs were preserved; new policies use dynamic fields.
+Values are examples, not automatically selected owner policy. These commands sign policy changes; they were not run during verification. An upgrade requires the appropriate UpgradeCap. Enabling the blacklist or calendar policy atomically migrates the vault: the original `Vault.paused` field stays true to reject every prior package version, and new code reads the effective pause state from `PolicyMigration`. Always use the new package for owner pause/unpause calls; an old owner unpause call would undo the old-code barrier. The owner key remains trusted. Old agent calls must reject after migration, even after a new-code unpause. Existing vault layouts and policy structs were preserved; new policies use dynamic fields.
 
 For device rehearsal: open /chat, run balance without a prompt, prepare a permitted small transfer, inspect the canonical summary, and initiate passkey approval. Complete the physical authenticator prompt yourself. Cancel before submission if only rehearsing authentication. Test locked access and then unlock using the existing security controls. A software test cannot establish physical-device success.
 

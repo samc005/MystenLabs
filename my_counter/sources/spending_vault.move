@@ -64,6 +64,19 @@ const EWeekLimit: u64 = 32;
 const DAY_MS: u64 = 86_400_000;
 const WEEK_MS: u64 = 604_800_000;
 
+/// Old package bytecode checks Vault.paused directly. Keep that field permanently
+/// true after migration; only new code understands the effective pause state.
+public struct PolicyMigrationKey has copy, drop, store {}
+public struct PolicyMigration has drop, store { paused: bool }
+public fun migrate_policy_enforcement(cap: &OwnerCap, vault: &mut Vault) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    if (!df::exists(&vault.id, PolicyMigrationKey {})) {
+        let paused = vault.paused;
+        df::add(&mut vault.id, PolicyMigrationKey {}, PolicyMigration { paused });
+    };
+    vault.paused = true;
+}
+
 public struct BlockedRecipient has copy, drop, store { recipient: address }
 public struct CalendarPolicyKey has copy, drop, store {}
 /// Fixed UTC days and Unix-epoch-aligned seven-day windows, not rolling windows.
@@ -74,16 +87,19 @@ public struct CalendarPolicy has drop, store {
 
 public fun block_recipient(cap: &OwnerCap, vault: &mut Vault, recipient: address) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
+    migrate_policy_enforcement(cap, vault);
     let key = BlockedRecipient { recipient };
     if (!df::exists(&vault.id, key)) df::add(&mut vault.id, key, true);
 }
 public fun unblock_recipient(cap: &OwnerCap, vault: &mut Vault, recipient: address) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
+    migrate_policy_enforcement(cap, vault);
     let key = BlockedRecipient { recipient };
     if (df::exists(&vault.id, key)) { let _: bool = df::remove(&mut vault.id, key); };
 }
 public fun set_calendar_policy(cap: &OwnerCap, vault: &mut Vault, day_cap: u64, week_cap: u64, clock: &Clock) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
+    migrate_policy_enforcement(cap, vault);
     if (df::exists(&vault.id, CalendarPolicyKey {})) {
         let p: &mut CalendarPolicy = df::borrow_mut(&mut vault.id, CalendarPolicyKey {});
         // Updating limits must never reset accumulated spending.
@@ -231,7 +247,11 @@ public fun set_per_tx_limit(cap: &OwnerCap, vault: &mut Vault, new_limit: u64) {
 
 public fun set_paused(cap: &OwnerCap, vault: &mut Vault, paused: bool) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
-    vault.paused = paused;
+    if (df::exists(&vault.id, PolicyMigrationKey {})) {
+        let state: &mut PolicyMigration = df::borrow_mut(&mut vault.id, PolicyMigrationKey {});
+        state.paused = paused;
+        vault.paused = true;
+    } else { vault.paused = paused; };
 }
 
 /// Invalidate every `AgentCap` issued so far. Issue new ones afterwards if needed.
@@ -370,7 +390,7 @@ fun spend_impl(cap: &AgentCap, vault: &mut Vault, recipient: address, amount: u6
     assert!(!df::exists(&vault.id, BlockedRecipient { recipient }), ERecipientBlocked);
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
-    assert!(!vault.paused, EPaused);
+    assert!(!is_paused(vault), EPaused);
     assert!(amount <= vault.per_tx_limit, EOverLimit);
     assert!(vault.balance.value() >= amount, EInsufficientFunds);
     // Owner-set spend policy (recipient allowlist + per-epoch cap), if configured.
@@ -396,7 +416,7 @@ fun spend_impl(cap: &AgentCap, vault: &mut Vault, recipient: address, amount: u6
 fun assert_can_stake(cap: &AgentCap, vault: &Vault, validator: address, amount: u64) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
-    assert!(!vault.paused, EPaused);
+    assert!(!is_paused(vault), EPaused);
     assert!(is_validator_allowed(vault, validator), EValidatorNotAllowed);
     assert!(vault.balance.value() >= amount, EInsufficientFunds);
     // Owner-set stake policy (size cap, liquid reserve, position limit), if configured.
@@ -590,7 +610,7 @@ public fun begin_swap<In, Out>(
 ): (Coin<In>, SwapTicket<In, Out>) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
-    assert!(!vault.paused, EPaused);
+    assert!(!is_paused(vault), EPaused);
 
     let key = IntentKey { intent_id };
     assert!(dof::exists_with_type<IntentKey, Intent<In, Out>>(&vault.id, key), EIntentNotFound);
@@ -929,7 +949,7 @@ public fun spend_approved(
 ) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
-    assert!(!vault.paused, EPaused);
+    assert!(!is_paused(vault), EPaused);
 
     let key = SpendIntentKey { intent_id };
     assert!(dof::exists_with_type<SpendIntentKey, SpendIntent>(&vault.id, key), ESpendIntentNotFound);
@@ -1035,7 +1055,7 @@ public fun begin_swap_auto<In, Out>(
 ): (Coin<In>, SwapTicket<In, Out>) {
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
-    assert!(!vault.paused, EPaused);
+    assert!(!is_paused(vault), EPaused);
     assert!(amount_in > 0, EZeroAmount);
     assert!(min_out > 0, EZeroAmount);
 
@@ -1158,7 +1178,14 @@ public fun per_tx_limit(vault: &Vault): u64 { vault.per_tx_limit }
 
 public fun total_spent(vault: &Vault): u64 { vault.total_spent }
 
-public fun is_paused(vault: &Vault): bool { vault.paused }
+public fun is_paused(vault: &Vault): bool {
+    if (df::exists(&vault.id, PolicyMigrationKey {})) {
+        // Fail closed if an operator used an old package's unpause function.
+        assert!(vault.paused, EPaused);
+        let state: &PolicyMigration = df::borrow(&vault.id, PolicyMigrationKey {});
+        state.paused
+    } else { vault.paused }
+}
 
 public fun is_coin_allowed<T>(vault: &Vault): bool {
     df::exists(&vault.id, AllowedCoin<T> {})
@@ -3326,4 +3353,46 @@ fun test_blacklist_cannot_be_bypassed_by_owner_intent() {
     blacklist(&mut s, true);
     agent_runs_spend(&mut s, id, 1_000);
     abort 999
+}
+
+#[test]
+fun test_migration_blocks_old_bytecode_while_current_spend_works() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    s.next_tx(OWNER);
+    let vault = s.take_shared<Vault>();
+    assert!(vault.paused); // Every prior agent entry point rejects this raw field.
+    assert!(!is_paused(&vault));
+    ts::return_shared(vault);
+    timed_spend(&mut s, 1, 0);
+    s.end();
+}
+#[test, expected_failure(abort_code = EPaused)]
+fun test_old_spend_pause_check_rejects_migrated_vault() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    s.next_tx(AGENT);
+    let vault = s.take_shared<Vault>();
+    // Exact assertion from the previously deployed spend/stake/swap functions.
+    assert!(!vault.paused, EPaused);
+    abort 999
+}
+#[test]
+fun test_new_unpause_never_unpauses_old_bytecode() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    s.next_tx(OWNER);
+    let cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    set_paused(&cap, &mut vault, true);
+    assert!(is_paused(&vault));
+    set_paused(&cap, &mut vault, false);
+    assert!(!is_paused(&vault));
+    assert!(vault.paused);
+    migrate_policy_enforcement(&cap, &mut vault);
+    assert!(!is_paused(&vault));
+    ts::return_shared(vault);
+    s.return_to_sender(cap);
+    timed_spend(&mut s, 1, 0);
+    s.end();
 }
