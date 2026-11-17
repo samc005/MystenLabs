@@ -1,6 +1,6 @@
 # Meeting requirements and today's demo readiness
 
-Source: Meeting Notes, Oct 29 and Oct 20, https://docs.google.com/document/d/1bZJ5rDPVOaudAwSUoVRtH_kFbT9LpD1oRDCz5T0d6Gw/edit
+Source: Meeting Notes, Nov 12, Oct 29 and Oct 20, https://docs.google.com/document/d/1bZJ5rDPVOaudAwSUoVRtH_kFbT9LpD1oRDCz5T0d6Gw/edit
 
 ## Requirement coverage
 
@@ -10,10 +10,10 @@ Source: Meeting Notes, Oct 29 and Oct 20, https://docs.google.com/document/d/1bZ
 | Agent interacts with vault via MCP | Fixed wallet-intent dispatcher, MCP builders, byte-bound signer approval | A live authenticated transaction must be rehearsed after authorization |
 | Native staking integration | Sui system staking call from vault; receipt held by vault; owner unstaking | Minimum 1 SUI, allowed validator and policy limits apply; separate demo vault now has 1.18 SUI in its main balance; 1 SUI simulation passes |
 | Trading integration | Vault begin-swap, on-chain mock pool, finish-swap; proceeds return to sleeve | This is a testnet mock venue, not Cetus/DeepBook or a production DEX |
-| Application-specific restrictions | Spend cap/recipient allowlist; stake total/reserve/positions; standing trade size, epoch cap, floor and expiry | Epoch budgets are not rolling 24-hour limits; verify deployed policy settings |
+| Application-specific restrictions | Spend cap/recipient allowlist; stake total/reserve/positions; standing trade size, epoch cap, floor and expiry | Epoch budget plus new fixed UTC day / Unix-aligned week budgets in source; verify deployed version and settings |
 | Separate admin key; one-off authorization | OwnerCap, owner CLI and exact single-use spend/trade intents | Local WebAuthn gates UI approvals, but owner administration still uses a CLI key, not an on-chain passkey |
 | Pause/revoke | Contract pause and agent-version revocation; application passkey lock | Application lock and on-chain revocation are distinct |
-| Optional recipient allowlist | Implemented | A separate explicit recipient blacklist from Oct 20 is not implemented |
+| Optional recipient allowlist | Implemented | Explicit blacklist implemented in source; deployment required |
 | UI and smart contract developed together | Chat, proposal cards, passkey confirmation and simulated balance changes | Real-device WebAuthn rehearsal remains necessary |
 | Pick one or two real activities | Native staking and on-chain mock-pool swaps selected | Liquid staking and lending remain unimplemented alternatives |
 | Extra novelty / multi-hop idea | Composable begin-swap/finish-swap ticket and policy constraints | Cross-chain, asynchronous and multi-hop routing are not implemented |
@@ -89,3 +89,60 @@ Verification completed:
 - Confirmed proposal executions now update the proposal card; unknown/unconfirmed submissions do not.
 
 See today-demo.md for the exact presentation commands. Deployment receipts, configuration, validator selection, and simulation results are saved under the ignored wallet-mcp/.wallet directory.
+
+## November 12 follow-up — verified November 16
+
+### Completed implementation
+
+- Added explicit recipient blacklist. It takes precedence over the allowlist and blocks both direct payments and pre-existing owner-approved payment intents. Only OwnerCap can block/unblock an address.
+- Added fixed UTC day and Unix-epoch-aligned seven-day SUI spending budgets using Sui Clock. These are calendar buckets, not rolling windows. Both budgets apply to direct delegated payments alongside the existing epoch budget. Exact owner-approved one-off intents remain explicit exceptions to budgets, but cannot bypass the blacklist, pause or revocation.
+- Added clock-aware spending; legacy `spend` fails closed when calendar limits exist. Policy updates preserve accumulated spend. Zero caps block spending. Counters reset independently at their boundaries.
+- Added owner CLI commands and MCP transaction-builder/status support. Existing deployments without a calendar policy keep their existing entry point.
+- Removed the duplicate passkey prompt from chat reads, proposals and unsigned preparation. First execution enrolls a credential if needed; exact-action single-use execution approvals, owner approvals, credential management and the application lock remain enforced.
+- Tightened translator instructions after a live run returned unexpected fields. Deterministic validation still rejects extra/invented fields.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `sui move test` in my_counter | 133 passed, including 11 new blacklist/calendar regressions |
+| UI/backend tests | 20 passed, including chat without approval, locked chat and malformed requests |
+| MCP/signer tests | 3 passed on final source |
+| TypeScript | wallet-mcp build and demo-ui typecheck pass |
+| Live natural-language -> direct PTB -> testnet simulation | Exact `spending_vault` EOverLimit (2) and EValidatorNotAllowed (5), bypassing client policy; no signature/submission |
+
+Live evidence: [nov12-live-evidence.json](nov12-live-evidence.json). Reproduce from the repository root after building wallet-mcp:
+
+    node --env-file=demo-ui/.env.local demo-ui/scripts/adversarial-rehearsal.mjs
+
+Infrastructure, ownership, type and unrelated errors do not count as a successful contract-enforcement test. The script fails unless it sees the exact expected contract abort.
+
+### Allowed and disallowed actions
+
+| Agent action | Contract authority and rejection conditions |
+| --- | --- |
+| Direct transfer | Matching/current AgentCap, unpaused vault, funds, per-payment limit, optional allowlist, blacklist, epoch and calendar budgets |
+| Stake | Matching/current AgentCap, unpaused vault, allowed validator, optional total/reserve/position limits; receipt stays in vault |
+| Owner payment | Existing unexpired single-use intent with fixed recipient/amount; blacklist, pause and revocation still apply |
+| Trade | Owner intent or standing pair rule, funded sleeve, expiry and output minimum; standing rules also enforce per-trade/epoch caps and price floor; proceeds return to vault |
+| Administer, withdraw, unstake | OwnerCap required, unavailable to agent |
+
+Move tests invoke the contract directly, bypassing UI/MCP checks. They include repeated small spends, revoked/paused caps, removed recipients, replayed/cancelled/expired intents, wrong-vault caps, price floors and aggregate trade budgets. Staking guard tests use helpers rather than a live validator, and mock swap tests are not production DEX evidence.
+
+### Earlier test records located
+
+Local ignored artifacts `wallet-mcp/.wallet/demo-simulation-results.json` and `demo-mcp-check.json` record successful staking/trading simulations and MCP preparation, with `transactionsSubmitted: false`. They do not identify their author, so they cannot be attributed to Shivakalyan or claimed as his earlier results. No separate teammate-authored results were available in the local artifacts inspected.
+
+### Operator rollout and real-device handoff
+
+The added contract functions are not deployed by a Git change. Review/publish or upgrade the vault package through the existing owner process, point the package configuration at that version, then use owner-only commands:
+
+    npm run owner:demo --prefix wallet-mcp -- calendar-policy 0.1 0.5
+    npm run owner:demo --prefix wallet-mcp -- block-recipient <full-address>
+    npm run owner:demo --prefix wallet-mcp -- unblock-recipient <full-address>
+
+Values are examples, not automatically selected owner policy. These commands sign policy changes; they were not run during verification. An upgrade requires the appropriate UpgradeCap. Existing vault layouts and policy structs were preserved; new policies use dynamic fields.
+
+For device rehearsal: open /chat, run balance without a prompt, prepare a permitted small transfer, inspect the canonical summary, and initiate passkey approval. Complete the physical authenticator prompt yourself. Cancel before submission if only rehearsing authentication. Test locked access and then unlock using the existing security controls. A software test cannot establish physical-device success.
+
+Information retrieval, volatility optimization and streaming micropayments were open ideas, not selected action items. Native staking and testnet mock trading remain the chosen basic activities.

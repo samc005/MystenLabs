@@ -1,0 +1,17 @@
+{
+  "checkedAt": "2026-11-17T05:55:18.060Z",
+  "network": "testnet",
+  "packageId": "0xfd1b7414378196394b9a62d3c04a89205c876a78a34cef8e2640fcc4dcb4c63c",
+  "vaultId": "0xa963a3a48b259edb408320f1f262032d874d0fef6409eb8b66dce320c9578888",
+  "prompt": "Please send 0.100000001 SUI to 0x0000000000000000000000000000000000000000000000000000000000000001",
+  "command": "send 0.100000001 SUI to 0x0000000000000000000000000000000000000000000000000000000000000001",
+  "expectedAbort": "EOverLimit (2)",
+  "reason": "MoveAbort in 1st command, abort code: 2, in '0xfd1b7414378196394b9a62d3c04a89205c876a78a34cef8e2640fcc4dcb4c63c::spending_vault::spend' (instruction 62)",
+  "submitted": false,
+  "staking": {
+    "prompt": "Please stake 1 SUI with 0x0000000000000000000000000000000000000000000000000000000000000001",
+    "command": "stake 1 SUI with 0x0000000000000000000000000000000000000000000000000000000000000001",
+    "expectedAbort": "EValidatorNotAllowed (5)",
+    "reason": "MoveAbort in 1st command, abort code: 5, in '0xfd1b7414378196394b9a62d3c04a89205c876a78a34cef8e2640fcc4dcb4c63c::spending_vault::assert_can_stake' (instruction 45)"
+  }
+}

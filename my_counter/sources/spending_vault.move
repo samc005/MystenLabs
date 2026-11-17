@@ -57,6 +57,63 @@ const ETradeEpochCapExceeded: u64 = 24;
 const ERateBelowFloor: u64 = 25;
 const EBadRule: u64 = 26;
 
+const ERecipientBlocked: u64 = 29;
+const EClockRequired: u64 = 30;
+const EDayLimit: u64 = 31;
+const EWeekLimit: u64 = 32;
+const DAY_MS: u64 = 86_400_000;
+const WEEK_MS: u64 = 604_800_000;
+
+public struct BlockedRecipient has copy, drop, store { recipient: address }
+public struct CalendarPolicyKey has copy, drop, store {}
+/// Fixed UTC days and Unix-epoch-aligned seven-day windows, not rolling windows.
+public struct CalendarPolicy has drop, store {
+    day_cap: u64, week_cap: u64, day: u64, week: u64,
+    day_spent: u64, week_spent: u64,
+}
+
+public fun block_recipient(cap: &OwnerCap, vault: &mut Vault, recipient: address) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    let key = BlockedRecipient { recipient };
+    if (!df::exists(&vault.id, key)) df::add(&mut vault.id, key, true);
+}
+public fun unblock_recipient(cap: &OwnerCap, vault: &mut Vault, recipient: address) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    let key = BlockedRecipient { recipient };
+    if (df::exists(&vault.id, key)) { let _: bool = df::remove(&mut vault.id, key); };
+}
+public fun set_calendar_policy(cap: &OwnerCap, vault: &mut Vault, day_cap: u64, week_cap: u64, clock: &Clock) {
+    assert!(cap.vault_id == object::id(vault), EWrongVault);
+    if (df::exists(&vault.id, CalendarPolicyKey {})) {
+        let p: &mut CalendarPolicy = df::borrow_mut(&mut vault.id, CalendarPolicyKey {});
+        // Updating limits must never reset accumulated spending.
+        p.day_cap = day_cap;
+        p.week_cap = week_cap;
+    } else {
+        df::add(&mut vault.id, CalendarPolicyKey {}, CalendarPolicy {
+            day_cap, week_cap, day: clock.timestamp_ms() / DAY_MS,
+            week: clock.timestamp_ms() / WEEK_MS, day_spent: 0, week_spent: 0,
+        });
+    };
+}
+fun enforce_calendar(vault: &mut Vault, amount: u64, clock: &Clock) {
+    if (!df::exists(&vault.id, CalendarPolicyKey {})) return;
+    let p: &mut CalendarPolicy = df::borrow_mut(&mut vault.id, CalendarPolicyKey {});
+    let day = clock.timestamp_ms() / DAY_MS;
+    let week = clock.timestamp_ms() / WEEK_MS;
+    if (day != p.day) { p.day = day; p.day_spent = 0; };
+    if (week != p.week) { p.week = week; p.week_spent = 0; };
+    assert!((p.day_spent as u128) + (amount as u128) <= (p.day_cap as u128), EDayLimit);
+    assert!((p.week_spent as u128) + (amount as u128) <= (p.week_cap as u128), EWeekLimit);
+    p.day_spent = p.day_spent + amount;
+    p.week_spent = p.week_spent + amount;
+}
+/// Clock-aware direct spend; legacy spend fails closed once calendar limits exist.
+public fun spend_with_clock(cap: &AgentCap, vault: &mut Vault, recipient: address, amount: u64, clock: &Clock, ctx: &mut TxContext) {
+    enforce_calendar(vault, amount, clock);
+    spend_impl(cap, vault, recipient, amount, ctx);
+}
+
 /// `SwapTicket.intent_id` for swaps run under a standing trade rule (no intent object).
 const STANDING_RULE_ID: address = @0x0;
 const U64_MAX: u128 = 18_446_744_073_709_551_615;
@@ -305,6 +362,12 @@ public fun spend(
     amount: u64,
     ctx: &mut TxContext,
 ) {
+    assert!(!df::exists(&vault.id, CalendarPolicyKey {}), EClockRequired);
+    spend_impl(cap, vault, recipient, amount, ctx);
+}
+
+fun spend_impl(cap: &AgentCap, vault: &mut Vault, recipient: address, amount: u64, ctx: &mut TxContext) {
+    assert!(!df::exists(&vault.id, BlockedRecipient { recipient }), ERecipientBlocked);
     assert!(cap.vault_id == object::id(vault), EWrongVault);
     assert!(cap.version == vault.agent_version, ERevoked);
     assert!(!vault.paused, EPaused);
@@ -876,6 +939,7 @@ public fun spend_approved(
     assert!(clock.timestamp_ms() <= expiry_ms, ESpendIntentExpired);
     assert!(vault.balance.value() >= amount, EInsufficientFunds);
 
+    assert!(!df::exists(&vault.id, BlockedRecipient { recipient }), ERecipientBlocked);
     let payment = coin::take(&mut vault.balance, amount, ctx);
     vault.total_spent = vault.total_spent + amount;
 
@@ -3127,3 +3191,139 @@ fun test_auto_swap_with_other_vaults_agent_cap_fails() {
     abort 999
 }
 
+
+// November 12 adversarial policy regression suite: invoke Move directly, bypassing UI/MCP.
+#[test_only]
+fun calendar_setup(s: &mut ts::Scenario, day: u64, week: u64) {
+    setup(s, 100, 10_000);
+    calendar_update(s, day, week, 0);
+}
+#[test_only]
+fun calendar_update(s: &mut ts::Scenario, day: u64, week: u64, now: u64) {
+    s.next_tx(OWNER);
+    let cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    let mut clk = clock::create_for_testing(s.ctx());
+    clk.set_for_testing(now);
+    set_calendar_policy(&cap, &mut vault, day, week, &clk);
+    clk.destroy_for_testing();
+    ts::return_shared(vault);
+    s.return_to_sender(cap);
+}
+#[test_only]
+fun timed_spend(s: &mut ts::Scenario, amount: u64, now: u64) {
+    s.next_tx(AGENT);
+    let cap = s.take_from_sender<AgentCap>();
+    let mut vault = s.take_shared<Vault>();
+    let mut clk = clock::create_for_testing(s.ctx());
+    clk.set_for_testing(now);
+    spend_with_clock(&cap, &mut vault, @0xCAFE, amount, &clk, s.ctx());
+    clk.destroy_for_testing();
+    ts::return_shared(vault);
+    s.return_to_sender(cap);
+}
+#[test_only]
+fun blacklist(s: &mut ts::Scenario, blocked: bool) {
+    s.next_tx(OWNER);
+    let cap = s.take_from_sender<OwnerCap>();
+    let mut vault = s.take_shared<Vault>();
+    if (blocked) block_recipient(&cap, &mut vault, @0xCAFE)
+    else unblock_recipient(&cap, &mut vault, @0xCAFE);
+    ts::return_shared(vault);
+    s.return_to_sender(cap);
+}
+#[test, expected_failure(abort_code = EDayLimit)]
+fun test_calendar_split_spends_cannot_bypass_day() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 150, 1_000);
+    timed_spend(&mut s, 100, 0);
+    timed_spend(&mut s, 51, 0);
+    abort 999
+}
+#[test, expected_failure(abort_code = EWeekLimit)]
+fun test_calendar_new_day_does_not_reset_week() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    timed_spend(&mut s, 100, 0);
+    timed_spend(&mut s, 51, DAY_MS);
+    abort 999
+}
+#[test]
+fun test_calendar_exact_caps_and_boundary_reset() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    timed_spend(&mut s, 100, DAY_MS - 1);
+    timed_spend(&mut s, 50, DAY_MS);
+    timed_spend(&mut s, 100, WEEK_MS);
+    s.end();
+}
+#[test, expected_failure(abort_code = EClockRequired)]
+fun test_calendar_legacy_entry_cannot_bypass_clock() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    agent_spends(&mut s, @0xCAFE, 1);
+    abort 999
+}
+#[test, expected_failure(abort_code = EDayLimit)]
+fun test_calendar_policy_update_preserves_spent() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    timed_spend(&mut s, 100, 0);
+    calendar_update(&mut s, 100, 150, 0);
+    timed_spend(&mut s, 1, 0);
+    abort 999
+}
+#[test, expected_failure(abort_code = EDayLimit)]
+fun test_calendar_zero_day_blocks_spend() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 0, 150);
+    timed_spend(&mut s, 1, 0);
+    abort 999
+}
+#[test, expected_failure(abort_code = ERecipientBlocked)]
+fun test_blacklist_applies_without_allowlist() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    blacklist(&mut s, true);
+    agent_spends(&mut s, @0xCAFE, 1);
+    abort 999
+}
+#[test, expected_failure(abort_code = ERecipientBlocked)]
+fun test_blacklist_wins_over_allowlist() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    owner_sets_spend_policy(&mut s, 100, true);
+    owner_allows_recipient(&mut s, @0xCAFE);
+    blacklist(&mut s, true);
+    agent_spends(&mut s, @0xCAFE, 1);
+    abort 999
+}
+#[test]
+fun test_blacklist_removal_is_idempotent() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    blacklist(&mut s, true);
+    blacklist(&mut s, true);
+    blacklist(&mut s, false);
+    blacklist(&mut s, false);
+    agent_spends(&mut s, @0xCAFE, 1);
+    s.end();
+}
+
+#[test, expected_failure(abort_code = ERecipientBlocked)]
+fun test_blacklist_applies_to_clock_spend() {
+    let mut s = ts::begin(OWNER);
+    calendar_setup(&mut s, 100, 150);
+    blacklist(&mut s, true);
+    timed_spend(&mut s, 1, 0);
+    abort 999
+}
+#[test, expected_failure(abort_code = ERecipientBlocked)]
+fun test_blacklist_cannot_be_bypassed_by_owner_intent() {
+    let mut s = ts::begin(OWNER);
+    setup(&mut s, 100, 1_000);
+    let id = owner_approves_spend(&mut s, @0xCAFE, 1, EXPIRY);
+    blacklist(&mut s, true);
+    agent_runs_spend(&mut s, id, 1_000);
+    abort 999
+}

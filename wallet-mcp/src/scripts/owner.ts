@@ -23,6 +23,8 @@ import {
   removeTradeRule,
   setPoolPrice,
   setRecipientAllowed,
+  setRecipientBlocked,
+  setCalendarPolicy,
   setSpendPolicy,
   setStakePolicy,
   setTradeRule,
@@ -56,6 +58,9 @@ const USAGE = `Usage: npm run owner -- <command>
   clear-spend-policy                     remove the spending cap and allowlist requirement
   allow-recipient <address>              add to the recipient allowlist
   disallow-recipient <address>
+  calendar-policy <sui-per-day> <sui-per-week>  fixed UTC/Unix seven-day windows
+  block-recipient <address>              deny even an approved payment
+  unblock-recipient <address>
   stake-policy <maxStakedSui> <reserveSui> <maxPositions>
                                          cap staking: total staked, SUI that must stay liquid, number of positions
   clear-stake-policy                     remove the stake limits
@@ -218,6 +223,18 @@ async function main() {
         `${allow ? "Allowed" : "Removed"} recipient ${recipient}.`,
         await setRecipientAllowed(ctx, recipient, allow),
       );
+      return;
+    }
+    case "calendar-policy": {
+      const [day, week] = args;
+      if (!day || !week) throw new Error(USAGE);
+      printReceipt("Calendar spending limits updated (existing counters preserved).", await setCalendarPolicy(ctx, parseUnits(day, 9), parseUnits(week, 9)));
+      return;
+    }
+    case "block-recipient":
+    case "unblock-recipient": {
+      if (!args[0]) throw new Error(USAGE);
+      printReceipt("Recipient blacklist updated.", await setRecipientBlocked(ctx, args[0], command === "block-recipient"));
       return;
     }
     case "stake-policy": {

@@ -31,8 +31,8 @@ Open http://localhost:3000/chat. Use the same hostname and port throughout the d
 ## Five-minute presentation
 
 1. Say: “The model translates intent; deterministic code chooses the capability; the owner confirms spending; the contract enforces limits.”
-2. Enter balance. Enroll a passkey on first use, then authenticate the request. Show the MCP result coming from testnet. Enter vault status to show balances and on-chain limits.
-3. Enter reverse a linked list. After authentication the application returns an unsupported-request error, without calling a general coding tool.
+2. Enter balance. Reads and unsigned preparation do not require a passkey. Enroll on first execution. Show the MCP result coming from testnet. Enter vault status to show balances and on-chain limits.
+3. Enter reverse a linked list. The application returns an unsupported-request error, without calling a general coding tool.
 4. Enter can you send 0.01 SUI to Alice? The trusted contact configuration resolves Alice to an address. Inspect the canonical amount/address and simulation output. Cancel first to demonstrate that preparation does not spend.
 5. Repeat with send Alice 0.01 SUI. Confirm the same recipient and amount. Choose Approve with passkey and execute only if you intend to spend this small testnet amount. Check the returned digest on the testnet explorer and refresh the recipient balance.
 6. Optionally show quote 0.05 SUI to tUSDC. This uses the project's testnet mock pool, not a live mainnet DEX price. A swap needs funds in the trading sleeve; pending proposals need owner CLI approval through the card plus passkey. Use the exact supported execution command shown in authenticated-workflow.md when needed.

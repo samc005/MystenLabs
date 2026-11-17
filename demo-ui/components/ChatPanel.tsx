@@ -77,12 +77,10 @@ export function ChatPanel({ onToolResult }: Props) {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      if (!(await getPasskeyStatus()).registered) await registerPasskey();
-      const { approvalId } = await approveProposal(await hashProposal({ action: "wallet-command", command: prompt }));
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages, approvalId }),
+        body: JSON.stringify({ messages }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -130,6 +128,7 @@ export function ChatPanel({ onToolResult }: Props) {
     if (!prepared || busy) return;
     setBusy(true);
     try {
+      if (!(await getPasskeyStatus()).registered) await registerPasskey();
       const { approvalId } = await approveProposal(await hashProposal({ action: "execute-wallet-command", ...prepared }));
       const response = await fetch("/api/wallet/execute", {
         method: "POST", headers: { "content-type": "application/json" },

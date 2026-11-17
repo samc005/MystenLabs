@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { consumeApproval, passkeyStatus } from "@/lib/server/passkey";
+import { passkeyStatus } from "@/lib/server/passkey";
 import type Anthropic from "@anthropic-ai/sdk";
 import { APIError } from "@anthropic-ai/sdk";
 import { runChatTurn, type ChatEvent } from "@/lib/server/agent";
@@ -13,7 +12,7 @@ export async function POST(request: Request) {
   const rejected = rejectNonLocal(request);
   if (rejected) return rejected;
 
-  const { messages, approvalId } = (await request.json().catch(() => ({}))) as { messages?: Anthropic.Beta.BetaMessageParam[]; approvalId?: string };
+  const { messages } = (await request.json().catch(() => ({}))) as { messages?: Anthropic.Beta.BetaMessageParam[] };
   if (!Array.isArray(messages) || messages.length === 0) {
     return Response.json({ error: "Send the conversation as { messages: [...] }." }, { status: 400 });
   }
@@ -23,9 +22,8 @@ export async function POST(request: Request) {
     if (last?.role !== "user" || typeof last.content !== "string") throw new Error("Send a wallet command.");
     if (last.content.length > 2000) throw new Error("Request too long.");
     if ((await passkeyStatus()).revoked) throw new Error("Wallet access is locked.");
-    if (!approvalId) throw new Error("Passkey authentication required.");
-    const hash = createHash("sha256").update(JSON.stringify({ action: "wallet-command", command: last.content })).digest("hex");
-    await consumeApproval(approvalId, hash);
+    // Chat only reads, proposes, and prepares unsigned bytes. Execution and
+    // owner administration retain their own exact-action passkey checks.
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Policy refused." }, { status: 403 });
   }

@@ -549,3 +549,18 @@ export async function setPoolPrice(ctx: OwnerContext, usdcPerSui: string): Promi
   });
   return { ...(await execute(ctx, tx)), price };
 }
+/** Owner-only calendar limits; changing limits preserves existing counters. */
+export async function setCalendarPolicy(ctx: OwnerContext, day: bigint, week: bigint): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({ target: `${packageId}::spending_vault::set_calendar_policy`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.u64(day), tx.pure.u64(week), tx.object.clock()] });
+  return execute(ctx, tx);
+}
+export async function setRecipientBlocked(ctx: OwnerContext, recipient: string, blocked: boolean): Promise<OwnerReceipt> {
+  const { packageId, vaultId } = vaultConfig();
+  const tx = new Transaction();
+  tx.moveCall({ target: `${packageId}::spending_vault::${blocked ? "block_recipient" : "unblock_recipient"}`,
+    arguments: [tx.object(ctx.ownerCapId), tx.object(vaultId), tx.pure.address(requireAddress(recipient))] });
+  return execute(ctx, tx);
+}

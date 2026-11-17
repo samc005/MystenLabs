@@ -122,6 +122,8 @@ export interface VaultStatus {
   spendPolicy: SpendPolicyInfo | null;
   /** Addresses the agent may pay directly when the spend policy enforces recipients. */
   allowedRecipients: string[];
+  blockedRecipients: string[];
+  calendarPolicy: Record<string, unknown> | null;
   stakePolicy: StakePolicyInfo | null;
   /** Owner-approved one-off payments the agent may still execute. */
   spendIntents: SpendIntentInfo[];
@@ -207,6 +209,8 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   const tradingFields: { fieldId: string; coinType: string }[] = [];
   const intentIds: string[] = [];
   const allowedRecipients: string[] = [];
+  const blockedRecipients: string[] = [];
+  let calendarPolicyFieldId: string | null = null;
   const spendIntentIds: string[] = [];
   let spendPolicyFieldId: string | null = null;
   let stakePolicyFieldId: string | null = null;
@@ -235,6 +239,10 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
         if (coinType) tradingFields.push({ fieldId: entry.fieldId, coinType });
       } else if (entry.$kind === "DynamicObject" && entry.name.type.includes("::spending_vault::IntentKey")) {
         intentIds.push(entry.childId);
+      } else if (entry.name.type.includes("::spending_vault::BlockedRecipient")) {
+        blockedRecipients.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
+      } else if (entry.name.type.includes("::spending_vault::CalendarPolicyKey")) {
+        calendarPolicyFieldId = entry.fieldId;
       } else if (entry.name.type.includes("::spending_vault::AllowedRecipient")) {
         allowedRecipients.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
       } else if (entry.$kind === "DynamicObject" && entry.name.type.includes("::spending_vault::SpendIntentKey")) {
@@ -301,7 +309,7 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
   }
 
   // A dynamic field's JSON is { id, name, value }; for struct values `value` holds the fields.
-  const policyIds = [spendPolicyFieldId, stakePolicyFieldId].filter((id): id is string => id !== null);
+  const policyIds = [spendPolicyFieldId, stakePolicyFieldId, calendarPolicyFieldId].filter((id): id is string => id !== null);
   const policyObjects = new Map<string, Record<string, unknown>>();
   if (policyIds.length > 0 || spendIntentIds.length > 0 || ruleFields.length > 0) {
     const { objects } = await client.getObjects({
@@ -384,6 +392,8 @@ async function readVaultDynamicFields(client: SuiGrpcClient, vaultId: string) {
     intents,
     spendPolicy,
     allowedRecipients,
+    blockedRecipients,
+    calendarPolicy: valueOf(calendarPolicyFieldId),
     stakePolicy,
     spendIntents,
     tradeRules,
@@ -456,6 +466,9 @@ export function classifySpend(
   if (amountMist > status.perTxLimitMist) {
     return { direct: false, reason: `${sui(amountMist)} is over the per-spend limit of ${sui(status.perTxLimitMist)}` };
   }
+  if (status.blockedRecipients.includes(normalizeSuiAddress(recipient))) {
+    return { direct: false, reason: `${recipient} is blocked by the owner's blacklist; unblock it before paying` };
+  }
   const policy = status.spendPolicy;
   if (!policy) return { direct: true };
   if (policy.enforceRecipients && !status.allowedRecipients.includes(normalizeSuiAddress(recipient))) {
@@ -485,6 +498,8 @@ export function formatVaultStatus(status: VaultStatus, config: VaultConfig = vau
     `Vault: ${status.vaultId}`,
     `Package: ${config.packageId}`,
     `Balance: ${sui(status.balanceMist)}`,
+    `Blocked recipients: ${status.blockedRecipients.join(", ") || "none"}`,
+    `Calendar policy: ${status.calendarPolicy ? JSON.stringify(status.calendarPolicy) : "none"}`,
     `Per-spend limit: ${sui(status.perTxLimitMist)}`,
     `Total spent so far: ${sui(status.totalSpentMist)}`,
     `Status: ${status.paused ? "PAUSED (all spends and stakes will be rejected)" : "active"}`,
@@ -619,12 +634,13 @@ export async function prepareVaultSpend(input: VaultSpendInput) {
   const tx = new Transaction();
   tx.setSender(sender);
   tx.moveCall({
-    target: `${config.packageId}::spending_vault::spend`,
+    target: `${config.packageId}::spending_vault::${status.calendarPolicy ? "spend_with_clock" : "spend"}`,
     arguments: [
       tx.object(config.agentCapId),
       tx.object(config.vaultId),
       tx.pure.address(recipient),
       tx.pure.u64(input.amountMist),
+      ...(status.calendarPolicy ? [tx.object.clock()] : []),
     ],
   });
   return { tx, sender, recipient, status };
