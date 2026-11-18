@@ -20,8 +20,14 @@ export const signRequest = z.strictObject({
   policyDecision: z.strictObject({ id: identifier, allowed: z.literal(true) }),
 });
 
+/** Who the approver expects to be paid by this transaction: address -> max MIST (decimal string). */
+export const approvalExpectation = z.strictObject({
+  credits: z.record(z.string().regex(/^0x[0-9a-fA-F]{1,64}$/), z.string().regex(/^[0-9]{1,20}$/)),
+});
+
 export const approvalRecord = signRequest.extend({
   expiresAtMs: z.number().int().positive(),
+  expectation: approvalExpectation.optional(),
 });
 
 export const signResponse = z.strictObject({

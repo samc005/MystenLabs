@@ -2,7 +2,8 @@ import { mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { createSuiClient } from "../blockchain/client.js";
 import { requireWallet } from "../blockchain/wallet.js";
-import { assertTestnet, resolveNetwork } from "../config.js";
+import { assertTestnet, resolveNetwork, tradingConfig, vaultConfig } from "../config.js";
+import { simulateForPolicy } from "../policy/effects.js";
 import { signerHost, signerPort, signerTimeoutMs, signerToken } from "./protocol.js";
 import { createSignerServer } from "./server.js";
 
@@ -39,7 +40,20 @@ async function main() {
   const { keypair, address } = await requireWallet("testnet").catch(() => {
     throw new Error("Could not load the configured testnet signing key.");
   });
+  const vault = vaultConfig();
+  const pool = tradingConfig();
   const server = createSignerServer({
+    simulate: (bytes, signal) => simulateForPolicy(client, bytes, signal),
+    policy: {
+      agentAddress: address,
+      vaultPackageId: vault.packageId,
+      vaultId: vault.vaultId,
+      agentCapId: vault.agentCapId,
+      pool: { packageId: pool.poolPackageId, poolId: pool.poolId },
+      ...(process.env.SUI_SIGNER_MAX_GAS_MIST
+        ? { maxGasBudgetMist: BigInt(process.env.SUI_SIGNER_MAX_GAS_MIST) }
+        : {}),
+    },
     token: token.data,
     stateDir,
     chainIdentifier,

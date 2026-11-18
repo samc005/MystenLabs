@@ -4,6 +4,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { join } from "node:path";
 import { bcs } from "@mysten/sui/bcs";
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import { evaluateEffects, type SimulatedEffects } from "../policy/effects.js";
+import { evaluateTransaction, type PolicyConfig } from "../policy/evaluate.js";
 import {
   approvalRecord,
   maxRequestBytes,
@@ -13,7 +15,7 @@ import {
 } from "./protocol.js";
 
 class Refusal extends Error {
-  constructor(readonly status: number, readonly code: string) {
+  constructor(readonly status: number, readonly code: string, readonly detail?: string[]) {
     super(code);
   }
 }
@@ -40,6 +42,13 @@ export function createSignerServer(options: {
   chainIdentifier: string;
   keypair: Ed25519Keypair;
   getCurrentEpoch: (signal: AbortSignal) => Promise<bigint>;
+  /**
+   * Deterministic hard rules, re-run on the exact bytes right before signing. The signer
+   * binary always sets this; it is optional only so protocol tests can omit it.
+   */
+  policy?: PolicyConfig;
+  /** Dry-runs the exact bytes on the node. Required for the effects stage; omitted in protocol tests. */
+  simulate?: (bytes: Uint8Array, signal: AbortSignal) => Promise<SimulatedEffects>;
 }) {
   const token = Buffer.from(`Bearer ${signerToken.parse(options.token)}`);
   const address = options.keypair.toSuiAddress();
@@ -119,6 +128,38 @@ export function createSignerServer(options: {
       throw new Refusal(403, "transaction_outside_epoch_window");
     }
 
+    // Checked before the proposal is consumed, so a denied request does not burn the approval.
+    if (options.policy) {
+      const decision = evaluateTransaction(bytes, options.policy);
+      if (!decision.allowed) throw new Refusal(403, "policy_denied", decision.reasons);
+
+      // Stage 2: the signer dry-runs the exact bytes itself. A simulation supplied by the
+      // caller would prove nothing, and an unavailable simulation fails closed.
+      if (options.simulate) {
+        let effects;
+        try {
+          effects = await options.simulate(bytes, signal);
+        } catch {
+          throw new Refusal(502, "simulation_unavailable");
+        }
+        const credits = Object.fromEntries(
+          Object.entries(approval.data.expectation?.credits ?? {}).map(([to, max]) => [to, BigInt(max)]),
+        );
+        const outcome = evaluateEffects(
+          effects,
+          {
+            agentAddress: options.policy.agentAddress,
+            agentCapId: options.policy.agentCapId,
+            ...(options.policy.maxGasBudgetMist !== undefined
+              ? { maxGasBudgetMist: options.policy.maxGasBudgetMist }
+              : {}),
+          },
+          { credits },
+        );
+        if (!outcome.allowed) throw new Refusal(403, "effects_denied", outcome.reasons);
+      }
+    }
+
     // Claim before signing. An interrupted request needs a new approval, and
     // concurrent requests or daemon restarts cannot reuse the same proposal ID.
     signal.throwIfAborted();
@@ -154,7 +195,9 @@ export function createSignerServer(options: {
       void sign(request, controller.signal).then(
         (result) => send(200, result),
         (error: unknown) => {
-          if (error instanceof Refusal) send(error.status, { error: error.code });
+          if (error instanceof Refusal) {
+            send(error.status, error.detail ? { error: error.code, reasons: error.detail } : { error: error.code });
+          }
           else send(500, { error: "signer_failure" });
         },
       );

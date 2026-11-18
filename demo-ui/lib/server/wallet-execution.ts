@@ -1,4 +1,4 @@
-import { recordProposalExecution } from "./proposals";
+import { readProposal, recordProposalExecution } from "./proposals";
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, writeFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -13,6 +13,34 @@ export function rememberPrepared(command: string, bytes: string, summary = ""): 
   prepared.set(id, { command, bytes, summary, expires: Date.now() + 120_000 });
   return id;
 }
+function suiToMist(amount: string): string {
+  const [whole, fraction = ""] = amount.split(".");
+  return (BigInt(whole!) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"))).toString();
+}
+
+/**
+ * Who this command is expected to pay, so the signer can reject a transaction whose dry run
+ * credits anyone else. Commands that should pay no one return undefined (the signer then
+ * treats any credit as unexpected). Only the exact grammar is recognised; anything else is
+ * left without an expectation, which is the stricter outcome.
+ */
+async function expectedCredits(command: string): Promise<{ credits: Record<string, string> } | undefined> {
+  try {
+    const send = command.match(/^send ((?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?) SUI to (0x[0-9a-fA-F]{64})$/i);
+    if (send) return { credits: { [send[2]!.toLowerCase()]: suiToMist(send[1]!) } };
+    const approved = command.match(/^execute payment (prop_[0-9a-f]{10})$/);
+    if (approved) {
+      const proposal = (await readProposal(approved[1]!)) as { kind?: string; recipient?: string; amountMist?: string } | undefined;
+      if (proposal?.kind === "spend" && proposal.recipient && proposal.amountMist) {
+        return { credits: { [proposal.recipient.toLowerCase()]: proposal.amountMist } };
+      }
+    }
+  } catch {
+    // No expectation: the signer will refuse any credit.
+  }
+  return undefined;
+}
+
 export async function executePrepared(id: string, approvalId: string) {
   if ((await passkeyStatus()).revoked) throw new Error('Wallet access is locked.');
   const transaction = prepared.get(id);
@@ -34,7 +62,8 @@ export async function executePrepared(id: string, approvalId: string) {
     const approvals = path.join(directory, 'approvals');
     await mkdir(approvals, { recursive: true, mode: 0o700 });
     const temp = path.join(approvals, id + '.tmp');
-    await writeFile(temp, JSON.stringify({ ...input, expiresAtMs: Math.min(transaction.expires, Date.now() + 30_000) }), { mode: 0o600, flag: 'wx' });
+    const expectation = await expectedCredits(transaction.command);
+    await writeFile(temp, JSON.stringify({ ...input, ...(expectation ? { expectation } : {}), expiresAtMs: Math.min(transaction.expires, Date.now() + 30_000) }), { mode: 0o600, flag: 'wx' });
     await rename(temp, path.join(approvals, id + '.json'));
     const result = await mcp.callTool({ name: 'execute_approved_transaction', arguments: input });
     const confirmation = result.structuredContent as { digest?: unknown; confirmed?: unknown } | undefined;

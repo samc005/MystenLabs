@@ -4,7 +4,9 @@ import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { TransactionDataBuilder, type Transaction } from "@mysten/sui/transactions";
 import { createSuiClient } from "../../blockchain/client.js";
 import { writeReceipt } from "../../blockchain/writes.js";
-import { assertTestnet, resolveNetwork } from "../../config.js";
+import { configuredAddress } from "../../blockchain/address.js";
+import { assertTestnet, resolveNetwork, tradingConfig, vaultConfig } from "../../config.js";
+import { evaluateTransaction } from "../../policy/evaluate.js";
 import { requestSignature } from "../../signer/client.js";
 import { signRequest } from "../../signer/protocol.js";
 
@@ -47,6 +49,17 @@ export function registerApprovedTransaction(server: McpServer): void {
     async (input) => {
       try {
         assertTestnet(resolveNetwork());
+        // Same deterministic rules the signer re-runs on the bytes: fail early with a clear reason.
+        const vault = vaultConfig();
+        const pool = tradingConfig();
+        const decision = evaluateTransaction(Buffer.from(input.transactionBytes, "base64"), {
+          agentAddress: configuredAddress("testnet"),
+          vaultPackageId: vault.packageId,
+          vaultId: vault.vaultId,
+          agentCapId: vault.agentCapId,
+          pool: { packageId: pool.poolPackageId, poolId: pool.poolId },
+        });
+        if (!decision.allowed) throw new Error(`Policy denied this transaction: ${decision.reasons.join(", ")}.`);
         const signature = await requestSignature(input);
         const client = createSuiClient("testnet");
         const transaction = Buffer.from(input.transactionBytes, "base64");
