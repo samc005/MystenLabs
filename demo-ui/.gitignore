@@ -4,6 +4,7 @@ out/
 .vercel/
 .env*
 .passkey/
+.accounts/
 next-env.d.ts
 *.tsbuildinfo
 

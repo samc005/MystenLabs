@@ -4,7 +4,7 @@
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { NETWORK } from "./sui";
 
-export type WalletRole = "sender" | "receiver";
+export type WalletRole = "sender" | "receiver" | "owner";
 
 interface StoredWallet {
   network: typeof NETWORK;

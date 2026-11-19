@@ -25,6 +25,15 @@ export default function Home() {
           <span className="demo-cta">Open demo →</span>
         </Link>
 
+        <Link href="/onboarding" className="card demo-card">
+          <span className="demo-tag local">Local only</span>
+          <h2>Create your account</h2>
+          <p className="muted">
+            Get your own owner wallet and your own vault, with an isolated agent key and limits only you can change.
+          </p>
+          <span className="demo-cta">Get started →</span>
+        </Link>
+
         <Link href="/chat" className="card demo-card">
           <span className="demo-tag local">Local only</span>
           <h2>Chat with Cipher</h2>
