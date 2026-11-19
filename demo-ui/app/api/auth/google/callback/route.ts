@@ -16,7 +16,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function failed(request: Request, reason: string) {
-  const response = NextResponse.redirect(new URL(`/onboarding?auth=failed&reason=${reason}`, request.url));
+  const response = NextResponse.redirect(new URL(`/?auth=failed&reason=${reason}`, request.url));
   response.cookies.set(OAUTH_COOKIE, "", { path: "/", maxAge: 0 });
   return response;
 }
@@ -48,7 +48,8 @@ export async function GET(request: Request) {
     const claims = await verifyIdToken(idToken, { clientId: config.clientId, nonce: pending.nonce });
     if (!claims.email || claims.email_verified !== true) return failed(request, "unverified_email");
 
-    const response = NextResponse.redirect(new URL("/onboarding", request.url));
+    // The home page sends them on: to Cipher if their account is ready, to setup if it is not.
+    const response = NextResponse.redirect(new URL("/", request.url));
     response.cookies.set(
       SESSION_COOKIE,
       seal({ sub: claims.sub, email: claims.email, name: claims.name }, SESSION_TTL_MS),

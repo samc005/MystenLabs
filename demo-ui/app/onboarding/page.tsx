@@ -107,6 +107,8 @@ export default function Onboarding() {
       setAccount(done);
       setStep(null);
       setBalance(await getSuiBalance(client.current, owner.address));
+      // Setup is done: hand over to Cipher after a moment, long enough to read the summary.
+      window.setTimeout(() => window.location.assign("/chat"), 2_000);
     } catch (error) {
       setNotice(errorMessage(error));
     } finally {
@@ -136,6 +138,14 @@ export default function Onboarding() {
   }
   const funded = balance !== null && required !== null && balance >= required;
   const active = account?.status === "active" && account.vault;
+
+  // While waiting on the faucet, keep checking so the Create button enables the moment SUI lands.
+  const ready = Boolean(active);
+  useEffect(() => {
+    if (!owner || !user || ready || funded) return;
+    const timer = window.setInterval(() => void refresh(), 4_000);
+    return () => window.clearInterval(timer);
+  }, [owner, user, ready, funded, refresh]);
 
   return (
     <main className="page">
@@ -300,9 +310,12 @@ export default function Onboarding() {
                 <strong>Agent</strong> <span className="mono">{shortAddress(account.agentAddress)}</span>
               </p>
             </div>
+            <div className="actions">
+              <button onClick={() => window.location.assign("/chat")}>Chat with Cipher</button>
+            </div>
             <p className="muted small">
-              Chat with Cipher still runs against the vault in <code>.env.local</code>. Pointing it at this account is the
-              next change, along with approving payments from your wallet.
+              Cipher now works inside this vault. Changing limits and approving payments from your wallet are not built
+              yet.
             </p>
           </article>
         )}

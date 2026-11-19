@@ -1,49 +1,73 @@
-import Link from "next/link";
+"use client";
 
+import Link from "next/link";
+import { useEffect, useState } from "react";
+
+interface Me {
+  user: { email: string } | null;
+  account: { status: "pending" | "active" } | null;
+}
+
+/**
+ * The front door. Signed out: one button. Signed in: straight to Cipher if the account is ready,
+ * or to wallet setup if it is not.
+ */
 export default function Home() {
+  const [me, setMe] = useState<Me | undefined>(undefined);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("auth") === "failed") setFailure(params.get("reason") ?? "unknown");
+    void fetch("/api/accounts/me", { cache: "no-store" })
+      .then((response) => response.json() as Promise<Me>)
+      .then((body) => {
+        setMe(body);
+        if (body.user) window.location.replace(body.account?.status === "active" ? "/chat" : "/onboarding");
+      })
+      .catch(() => setMe({ user: null, account: null }));
+  }, []);
+
   return (
     <main className="page">
       <header className="masthead">
         <p className="eyebrow">
           <span className="pill">testnet</span> Coins here have no value
         </p>
-        <h1>AI wallet on Sui</h1>
+        <h1>Cipher</h1>
         <p className="lede">
-          Two demos of the same wallet code. One runs entirely in your browser. The other lets you ask Cipher, an assistant
-          powered by Claude, to move SUI, and Cipher does it by calling the wallet-mcp tools.
+          Sign in and you get your own wallet and vault. Cipher, an AI assistant, can then pay people for you, but only
+          inside the limits you set. Your wallet keeps the keys to change them.
         </p>
       </header>
 
-      <div className="demo-grid">
-        <Link href="/browser-wallet" className="card demo-card">
-          <span className="demo-tag">Runs anywhere</span>
-          <h2>Browser wallet</h2>
-          <p className="muted">
-            Create a wallet in the page, fund it from the faucet, and send SUI. Each action shows the MCP tool call an AI
-            would make.
-          </p>
-          <span className="demo-cta">Open demo →</span>
-        </Link>
+      {failure && (
+        <div className="notice" role="status">
+          <span>Google sign-in did not complete ({failure}). Try again.</span>
+        </div>
+      )}
 
-        <Link href="/onboarding" className="card demo-card">
-          <span className="demo-tag local">Local only</span>
-          <h2>Create your account</h2>
-          <p className="muted">
-            Get your own owner wallet and your own vault, with an isolated agent key and limits only you can change.
-          </p>
-          <span className="demo-cta">Get started →</span>
-        </Link>
+      <article className="card">
+        {me === undefined && <p className="muted">Loading…</p>}
+        {me?.user && <p className="muted">Taking you to Cipher…</p>}
+        {me && !me.user && (
+          <>
+            <p className="muted">
+              Sign in with Google. We create your wallet and vault after that. You only need to add some free testnet
+              SUI.
+            </p>
+            <div className="actions">
+              <button onClick={() => window.location.assign("/api/auth/google/start")}>Continue with Google</button>
+            </div>
+          </>
+        )}
+      </article>
 
-        <Link href="/chat" className="card demo-card">
-          <span className="demo-tag local">Local only</span>
-          <h2>Chat with Cipher</h2>
-          <p className="muted">
-            Type a request. Cipher calls get_balance and transfer_sui on the real wallet-mcp server, using the wallets your
-            npm scripts created, and the balances update live.
-          </p>
-          <span className="demo-cta">Open demo →</span>
-        </Link>
-      </div>
+      {me && !me.user && (
+        <p className="muted small">
+          Just looking? <Link href="/browser-wallet">Try the browser wallet demo</Link>, which needs no sign-in.
+        </p>
+      )}
     </main>
   );
 }
