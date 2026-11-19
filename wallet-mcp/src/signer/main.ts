@@ -3,6 +3,7 @@ import { isAbsolute, join } from "node:path";
 import { createSuiClient } from "../blockchain/client.js";
 import { requireWallet } from "../blockchain/wallet.js";
 import { assertTestnet, resolveNetwork } from "../config.js";
+import { openKeyring } from "./keyring.js";
 import { signerHost, signerPort, signerTimeoutMs, signerToken } from "./protocol.js";
 import { createSignerServer } from "./server.js";
 
@@ -14,9 +15,8 @@ async function main() {
   }
   const token = signerToken.safeParse(process.env.SUI_SIGNER_TOKEN);
   if (!token.success) throw new Error("Set SUI_SIGNER_TOKEN to 32 random bytes encoded in lowercase hex.");
-  if (!process.env.SUI_WALLET_FILE && !process.env.SUI_SECRET_KEY) {
-    throw new Error("Configure a signer-owned SUI_WALLET_FILE or SUI_SECRET_KEY.");
-  }
+  // A single operator wallet is optional. Per-account agent keys come from the keyring.
+  const hasLegacyWallet = Boolean(process.env.SUI_WALLET_FILE || process.env.SUI_SECRET_KEY);
   if (process.env.SUI_WALLET_FILE && !process.env.SUI_SECRET_KEY) {
     const walletFile = await stat(process.env.SUI_WALLET_FILE);
     if (!walletFile.isFile() || walletFile.uid !== process.getuid?.() || (walletFile.mode & 0o077)) {
@@ -36,14 +36,18 @@ async function main() {
   const { chainIdentifier } = await client.getChainIdentifier({
     signal: AbortSignal.timeout(signerTimeoutMs),
   });
-  const { keypair, address } = await requireWallet("testnet").catch(() => {
-    throw new Error("Could not load the configured testnet signing key.");
-  });
+  const legacy = hasLegacyWallet
+    ? await requireWallet("testnet").catch(() => {
+        throw new Error("Could not load the configured testnet signing key.");
+      })
+    : undefined;
+  const keyring = await openKeyring(join(stateDir, "keys"));
   const server = createSignerServer({
     token: token.data,
     stateDir,
     chainIdentifier,
-    keypair,
+    ...(legacy ? { keypair: legacy.keypair } : {}),
+    keyring,
     async getCurrentEpoch(signal) {
       const { systemState } = await client.core.getCurrentSystemState({ signal });
       return BigInt(systemState.epoch);
@@ -54,7 +58,10 @@ async function main() {
     process.exitCode = 1;
   });
   server.listen(port, signerHost, () => {
-    console.error(`Testnet signer listening on ${signerHost}:${port} for ${address}`);
+    console.error(
+      `Testnet signer listening on ${signerHost}:${port} (operator wallet: ${legacy?.address ?? "none"}, ` +
+        `${keyring.size()} account agent key${keyring.size() === 1 ? "" : "s"})`,
+    );
   });
 }
 
