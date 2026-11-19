@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ScriptRunner } from "@/components/ScriptRunner";
+import { SignOutButton } from "@/components/SignOutButton";
 import { WalletPanel } from "@/components/WalletPanel";
 import type { LocalWallet, WalletMcpStatus } from "@/lib/server/wallet-mcp";
 import "./chat.css";
@@ -52,9 +53,12 @@ export default function ChatDemo() {
   return (
     <main className="page wide">
       <header className="masthead">
-        <Link className="back" href="/settings">
-          Account settings →
-        </Link>
+        <p className="small">
+          <Link className="back" href="/settings">
+            Account settings →
+          </Link>{" "}
+          <SignOutButton />
+        </p>
         <p className="eyebrow">
           <span className="pill">testnet</span> Local only · Cipher (Claude) → wallet-mcp → Sui
         </p>

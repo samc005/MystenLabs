@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { SignOutButton } from "@/components/SignOutButton";
 import { createSuiClient, explorerAddressUrl, FAUCET_PAGE_URL, formatSui, getSuiBalance, NETWORK } from "@/lib/sui";
 import { execute } from "@/lib/onboarding";
 import { loadWallet, type DemoWallet } from "@/lib/wallet";
@@ -124,9 +125,12 @@ export default function SettingsPage() {
   return (
     <main className="page wide">
       <header className="masthead">
-        <Link className="back" href="/chat">
-          ← Back to chat
-        </Link>
+        <p className="small">
+          <Link className="back" href="/chat">
+            ← Back to chat
+          </Link>{" "}
+          <SignOutButton />
+        </p>
         <p className="eyebrow">
           <span className="pill">{NETWORK}</span> Coins here have no value
         </p>
