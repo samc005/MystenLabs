@@ -7,7 +7,7 @@
 // without a network.
 
 import { coinWithBalance, Transaction } from "@mysten/sui/transactions";
-import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
+import { isValidSuiAddress, normalizeSuiAddress, toHex } from "@mysten/sui/utils";
 
 const MODULE = "spending_vault";
 const MAX_RECIPIENTS = 20;
@@ -46,6 +46,17 @@ export function requiredOwnerBalanceMist(policy: OnboardingPolicy): bigint {
 
 const U64_MAX = (1n << 64n) - 1n;
 
+/** Normalizes and de-duplicates Sui addresses. Throws a user-readable error on a malformed one. */
+export function normalizeRecipients(raw: string[]): string[] {
+  const recipients: string[] = [];
+  for (const entry of raw) {
+    if (!isValidSuiAddress(entry.trim())) throw new Error(`"${entry.trim()}" is not a valid Sui address.`);
+    const address = normalizeSuiAddress(entry.trim());
+    if (!recipients.includes(address)) recipients.push(address);
+  }
+  return recipients;
+}
+
 /** Returns a copy with normalized, de-duplicated recipients. Throws a user-readable error on bad input. */
 export function validatePolicy(policy: OnboardingPolicy): OnboardingPolicy {
   const positive: [string, bigint][] = [
@@ -60,12 +71,7 @@ export function validatePolicy(policy: OnboardingPolicy): OnboardingPolicy {
     if (value <= 0n || value > U64_MAX) throw new Error(`${label} must be a positive amount.`);
   }
   if (policy.dayCapMist > policy.weekCapMist) throw new Error("The daily cap cannot exceed the weekly cap.");
-  const recipients: string[] = [];
-  for (const raw of policy.allowedRecipients) {
-    if (!isValidSuiAddress(raw.trim())) throw new Error(`"${raw.trim()}" is not a valid Sui address.`);
-    const address = normalizeSuiAddress(raw.trim());
-    if (!recipients.includes(address)) recipients.push(address);
-  }
+  const recipients = normalizeRecipients(policy.allowedRecipients);
   if (recipients.length > MAX_RECIPIENTS) throw new Error(`Allow at most ${MAX_RECIPIENTS} recipients at setup.`);
   return { ...policy, allowedRecipients: recipients };
 }
@@ -117,6 +123,182 @@ export function buildSetupTx(input: {
     arguments: [cap, vault, tx.pure.bool(true), tx.pure.bool(false), tx.pure.bool(false)],
   });
   return tx;
+}
+
+// ---- Owner edits after setup. Only the sections the owner changed are sent. ----
+
+export interface PolicyChanges {
+  /** Hard per-transaction ceiling. Must be positive. */
+  perTxLimitMist?: bigint;
+  /** Daily cap for direct spends (0 blocks them) and whether only allowlisted recipients may be paid. */
+  spend?: { dailyCapMist: bigint; enforceRecipients: boolean };
+  /** Day and week caps. Each is zero or more, and the day cap cannot exceed the week cap. 0 blocks that window. */
+  calendar?: { dayCapMist: bigint; weekCapMist: bigint };
+  allowRecipients?: string[];
+  disallowRecipients?: string[];
+}
+
+/** Checks a set of edits and returns it with normalized recipients. Throws a user-readable error. */
+export function validatePolicyChanges(changes: PolicyChanges): PolicyChanges & {
+  allowRecipients: string[];
+  disallowRecipients: string[];
+} {
+  if (changes.perTxLimitMist !== undefined && (changes.perTxLimitMist <= 0n || changes.perTxLimitMist > U64_MAX)) {
+    throw new Error("Per-transaction limit must be a positive amount.");
+  }
+  if (changes.spend && (changes.spend.dailyCapMist < 0n || changes.spend.dailyCapMist > U64_MAX)) {
+    throw new Error("Daily cap must be zero or more.");
+  }
+  if (changes.calendar) {
+    const { dayCapMist, weekCapMist } = changes.calendar;
+    if (dayCapMist < 0n || weekCapMist < 0n || weekCapMist > U64_MAX || dayCapMist > U64_MAX) {
+      throw new Error("Daily and weekly caps must be zero or more.");
+    }
+    if (dayCapMist > weekCapMist) throw new Error("The daily cap cannot exceed the weekly cap.");
+  }
+  const allowRecipients = normalizeRecipients(changes.allowRecipients ?? []);
+  const disallowRecipients = normalizeRecipients(changes.disallowRecipients ?? []);
+  if (allowRecipients.some((address) => disallowRecipients.includes(address))) {
+    throw new Error("An address cannot be both added and removed.");
+  }
+  if (allowRecipients.length > MAX_RECIPIENTS) throw new Error(`Add at most ${MAX_RECIPIENTS} recipients at once.`);
+  const hasChange =
+    changes.perTxLimitMist !== undefined ||
+    changes.spend !== undefined ||
+    changes.calendar !== undefined ||
+    allowRecipients.length > 0 ||
+    disallowRecipients.length > 0;
+  if (!hasChange) throw new Error("Nothing to change.");
+  return { ...changes, allowRecipients, disallowRecipients };
+}
+
+/**
+ * One owner transaction with a call for each section that changed. The owner's OwnerCap signs it;
+ * the agent is not involved and cannot raise its own limits.
+ */
+export function buildPolicyUpdateTx(input: {
+  packageId: string;
+  vaultId: string;
+  ownerCapId: string;
+  changes: PolicyChanges;
+}): Transaction {
+  const changes = validatePolicyChanges(input.changes);
+  const call = (name: string) => `${input.packageId}::${MODULE}::${name}`;
+  const tx = new Transaction();
+  const cap = tx.object(input.ownerCapId);
+  const vault = tx.object(input.vaultId);
+
+  if (changes.perTxLimitMist !== undefined) {
+    tx.moveCall({ target: call("set_per_tx_limit"), arguments: [cap, vault, tx.pure.u64(changes.perTxLimitMist)] });
+  }
+  if (changes.spend) {
+    tx.moveCall({
+      target: call("set_spend_policy"),
+      arguments: [cap, vault, tx.pure.u64(changes.spend.dailyCapMist), tx.pure.bool(changes.spend.enforceRecipients)],
+    });
+  }
+  if (changes.calendar) {
+    tx.moveCall({
+      target: call("set_calendar_policy"),
+      arguments: [
+        cap,
+        vault,
+        tx.pure.u64(changes.calendar.dayCapMist),
+        tx.pure.u64(changes.calendar.weekCapMist),
+        tx.object.clock(),
+      ],
+    });
+  }
+  for (const recipient of changes.allowRecipients) {
+    tx.moveCall({ target: call("allow_recipient"), arguments: [cap, vault, tx.pure.address(recipient)] });
+  }
+  for (const recipient of changes.disallowRecipients) {
+    tx.moveCall({ target: call("disallow_recipient"), arguments: [cap, vault, tx.pure.address(recipient)] });
+  }
+  return tx;
+}
+
+/** The limits as they are on-chain. Read from the vault's dynamic fields, not from our server. */
+export interface VaultPolicy {
+  perTxLimitMist: bigint;
+  spend: { dailyCapMist: bigint; enforceRecipients: boolean } | null;
+  calendar: { dayCapMist: bigint; weekCapMist: bigint } | null;
+  allowedRecipients: string[];
+}
+
+interface DynamicFieldEntry {
+  fieldId: string;
+  $kind: string;
+  name: { type: string; bcs: Uint8Array };
+}
+
+/** The subset of the gRPC client used to read a vault's policy. Tests pass a fake. */
+export interface PolicyReader {
+  getObjects(args: { objectIds: string[]; include: { json: true } }): Promise<{ objects: (ObjectLike | Error)[] }>;
+  listDynamicFields(args: {
+    parentId: string;
+    cursor?: string | null;
+    include: { value: true };
+  }): Promise<{ dynamicFields: DynamicFieldEntry[]; hasNextPage: boolean; cursor: string | null }>;
+}
+
+function u64Field(value: unknown, label: string): bigint {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "bigint") return BigInt(value);
+  throw new Error(`Unexpected ${label} on the vault.`);
+}
+
+export async function readVaultPolicy(reader: PolicyReader, vaultId: string): Promise<VaultPolicy> {
+  const [vault] = (await reader.getObjects({ objectIds: [vaultId], include: { json: true } })).objects;
+  if (!vault || vault instanceof Error || !vault.json) throw new Error("Could not read the vault on-chain.");
+
+  const allowedRecipients: string[] = [];
+  let spendFieldId: string | undefined;
+  let calendarFieldId: string | undefined;
+  let cursor: string | null = null;
+  do {
+    const page = await reader.listDynamicFields({ parentId: vaultId, cursor, include: { value: true } });
+    for (const entry of page.dynamicFields) {
+      if (entry.name.type.includes("::spending_vault::AllowedRecipient")) {
+        allowedRecipients.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
+      } else if (entry.name.type.includes("::spending_vault::SpendPolicyKey")) {
+        spendFieldId = entry.fieldId;
+      } else if (entry.name.type.includes("::spending_vault::CalendarPolicyKey")) {
+        calendarFieldId = entry.fieldId;
+      }
+    }
+    cursor = page.hasNextPage ? page.cursor : null;
+  } while (cursor);
+
+  // A dynamic field's JSON is { id, name, value }; for struct values, `value` holds the fields.
+  const valueById = new Map<string, Record<string, unknown>>();
+  const fieldIds = [spendFieldId, calendarFieldId].filter((id): id is string => id !== undefined);
+  if (fieldIds.length > 0) {
+    const { objects } = await reader.getObjects({ objectIds: fieldIds, include: { json: true } });
+    for (const object of objects) {
+      if (object instanceof Error || !object.json || !object.objectId) continue;
+      const value = object.json.value;
+      if (value && typeof value === "object") valueById.set(object.objectId, value as Record<string, unknown>);
+    }
+  }
+
+  const spendValue = spendFieldId ? valueById.get(spendFieldId) : undefined;
+  const calendarValue = calendarFieldId ? valueById.get(calendarFieldId) : undefined;
+  return {
+    perTxLimitMist: u64Field(vault.json.per_tx_limit, "per-transaction limit"),
+    spend: spendValue
+      ? {
+          dailyCapMist: u64Field(spendValue.daily_cap, "daily cap"),
+          enforceRecipients: spendValue.enforce_recipients === true,
+        }
+      : null,
+    calendar: calendarValue
+      ? {
+          dayCapMist: u64Field(calendarValue.day_cap, "day cap"),
+          weekCapMist: u64Field(calendarValue.week_cap, "week cap"),
+        }
+      : null,
+    allowedRecipients: allowedRecipients.sort(),
+  };
 }
 
 // ---- Chain lookups, shared by the browser flow and the server-side verification. ----

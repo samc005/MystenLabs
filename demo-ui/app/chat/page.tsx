@@ -52,8 +52,8 @@ export default function ChatDemo() {
   return (
     <main className="page wide">
       <header className="masthead">
-        <Link className="back" href="/">
-          ← All demos
+        <Link className="back" href="/settings">
+          Account settings →
         </Link>
         <p className="eyebrow">
           <span className="pill">testnet</span> Local only · Cipher (Claude) → wallet-mcp → Sui

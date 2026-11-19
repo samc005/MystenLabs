@@ -27,7 +27,11 @@ export interface Account {
   vault?: AccountVault;
   createdAt: string;
   activatedAt?: string;
+  /** Shown in the UI. Chosen by the user; never used for any on-chain decision. */
+  displayName?: string;
 }
+
+const DISPLAY_NAME_MAX = 60;
 
 export const accountsDir = () => process.env.SUI_ACCOUNTS_DIR || join(process.cwd(), ".accounts");
 const accountsFile = () => join(accountsDir(), "accounts.json");
@@ -113,6 +117,21 @@ export async function createPendingAccount(
       createdAt: new Date().toISOString(),
     };
     accounts.push(account);
+    return account;
+  });
+}
+
+/** Sets the profile name of the signed-in user's account. Only that user's account can change. */
+export async function updateDisplayName(userId: string, value: unknown): Promise<Account> {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name || name.length > DISPLAY_NAME_MAX) {
+    throw new Error(`Display name must be 1 to ${DISPLAY_NAME_MAX} characters.`);
+  }
+  if (!userId) throw new Error("Sign in before changing your profile.");
+  return mutate((accounts) => {
+    const account = accounts.find((candidate) => candidate.userId === userId);
+    if (!account) throw new Error("You do not have an account yet.");
+    account.displayName = name;
     return account;
   });
 }

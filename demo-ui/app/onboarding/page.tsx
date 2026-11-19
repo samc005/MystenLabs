@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseToMist } from "@mysten/sui/utils";
 import {
@@ -151,9 +150,6 @@ export default function Onboarding() {
     <main className="page">
       <header className="masthead">
         <div>
-          <Link className="back" href="/">
-            ← All demos
-          </Link>
           <p className="eyebrow">
             <span className="pill">{NETWORK}</span> Coins here have no value
           </p>

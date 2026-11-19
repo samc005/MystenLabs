@@ -264,7 +264,7 @@ export default function Home() {
       <header className="masthead">
         <div>
           <Link className="back" href="/">
-            ← All demos
+            ← Back to sign-in
           </Link>
           <p className="eyebrow">
             <span className="pill">{NETWORK}</span> Coins here have no value

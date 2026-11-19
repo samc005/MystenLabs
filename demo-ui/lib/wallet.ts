@@ -40,6 +40,15 @@ function write(role: WalletRole, wallet: StoredWallet): void {
   }
 }
 
+/** This browser's existing wallet for `role`, or undefined. Never creates one. */
+export function loadWallet(role: WalletRole): DemoWallet | undefined {
+  const existing = read(role);
+  if (!existing) return undefined;
+  const keypair = Ed25519Keypair.fromSecretKey(existing.secretKey);
+  if (keypair.toSuiAddress() !== existing.address) return undefined;
+  return { role, keypair, address: existing.address };
+}
+
 /** Loads this browser's testnet wallet for `role`, or creates and stores a new one. */
 export function loadOrCreateWallet(role: WalletRole): DemoWallet {
   const existing = read(role);

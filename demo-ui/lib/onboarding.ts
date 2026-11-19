@@ -37,7 +37,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
-async function execute(client: Client, signer: Ed25519Keypair, tx: Transaction): Promise<string> {
+/** Signs with the owner's key, submits, and waits. Shared by onboarding and the settings page. */
+export async function execute(client: Client, signer: Ed25519Keypair, tx: Transaction): Promise<string> {
   tx.setSender(signer.toSuiAddress());
   const submitted = await client.signAndExecuteTransaction({ transaction: tx, signer, include: { effects: true } });
   if (submitted.$kind === "FailedTransaction") {
