@@ -47,21 +47,40 @@ export default function Onboarding() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [keyCopied, setKeyCopied] = useState(false);
+  // undefined while loading, null when signed out.
+  const [user, setUser] = useState<{ email: string } | null | undefined>(undefined);
 
   // The owner key lives in localStorage, so it only exists after mount.
   useEffect(() => {
     setOwner(loadOrCreateWallet("owner"));
+    void fetch("/api/auth/session")
+      .then((response) => response.json())
+      .then((body: { user: { email: string } | null }) => setUser(body.user))
+      .catch(() => setUser(null));
+    if (new URLSearchParams(window.location.search).get("auth") === "failed") {
+      setNotice("Google sign-in did not complete. Try again.");
+    }
   }, []);
 
+  async function signOut() {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    setUser(null);
+    setAccount(null);
+  }
+
   const refresh = useCallback(async () => {
-    if (!owner) return;
+    if (!owner || !user) return;
     try {
       setBalance(await getSuiBalance(client.current, owner.address));
       setAccount(await loadAccount(owner.address));
     } catch (error) {
       setNotice(errorMessage(error));
     }
-  }, [owner]);
+  }, [owner, user]);
 
   useEffect(() => {
     void refresh();
@@ -80,7 +99,7 @@ export default function Onboarding() {
   }
 
   async function create() {
-    if (!owner) return;
+    if (!owner || !user) return;
     setBusy(true);
     setNotice(null);
     try {
@@ -143,6 +162,21 @@ export default function Onboarding() {
             Dismiss
           </button>
         </div>
+      )}
+
+      {user === null && (
+        <div className="notice" role="status">
+          <span>Sign in with Google to create your account.</span>
+          <button onClick={() => window.location.assign("/api/auth/google/start")}>Sign in with Google</button>
+        </div>
+      )}
+      {user && (
+        <p className="muted small">
+          Signed in as {user.email}.{" "}
+          <button className="link" onClick={signOut}>
+            Sign out
+          </button>
+        </p>
       )}
 
       <section className="steps">
@@ -224,7 +258,7 @@ export default function Onboarding() {
               Your agent can only pay trusted recipients directly. With none listed, every payment needs your approval.
             </p>
             <div className="actions">
-              <button onClick={create} disabled={!owner || busy || !funded}>
+              <button onClick={create} disabled={!owner || !user || busy || !funded}>
                 {busy ? "Creating…" : "Create my vault"}
               </button>
               {!funded && <span className="muted small">Fund your owner wallet first.</span>}

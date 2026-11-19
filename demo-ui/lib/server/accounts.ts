@@ -18,6 +18,8 @@ export interface AccountVault {
 
 export interface Account {
   id: string;
+  /** The Google subject that owns this account. Every read and write checks it. */
+  userId: string;
   ownerAddress: string;
   agentAddress: string;
   /** pending: agent key minted, vault not yet verified on-chain. active: vault verified. */
@@ -81,16 +83,25 @@ export async function getAccountByOwner(ownerAddress: string): Promise<Account |
  * (a page reload, a retry after a failed transaction) never mints a second agent.
  */
 export async function createPendingAccount(
-  ownerAddress: string,
+  input: { ownerAddress: string; userId: string },
   provisionAgent: () => Promise<string>,
 ): Promise<Account> {
-  const owner = requireOwnerAddress(ownerAddress);
+  const owner = requireOwnerAddress(input.ownerAddress);
+  if (!input.userId) throw new Error("Sign in before creating an account.");
   return mutate(async (accounts) => {
-    const existing = accounts.find((account) => account.ownerAddress === owner);
-    if (existing) return existing;
+    // One account per sign-in. Asking for a different wallet is an error, not a second account.
+    const mine = accounts.find((account) => account.userId === input.userId);
+    if (mine) {
+      if (mine.ownerAddress !== owner) throw new Error("This sign-in already has an account with a different wallet.");
+      return mine;
+    }
+    if (accounts.some((account) => account.ownerAddress === owner)) {
+      throw new Error("That wallet already belongs to another account.");
+    }
     const agentAddress = await provisionAgent();
     const account: Account = {
       id: randomUUID(),
+      userId: input.userId,
       ownerAddress: owner,
       agentAddress: requireOwnerAddress(agentAddress),
       status: "pending",
