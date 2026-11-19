@@ -4,19 +4,23 @@ import { mkdir, writeFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { consumeApproval, passkeyStatus } from './passkey';
 import { connectWalletMcp } from './agent';
+import type { AccountContext } from './account-context';
 
-const prepared = new Map<string, { command: string; bytes: string; summary: string; expires: number }>();
-export function rememberPrepared(command: string, bytes: string, summary = ""): string {
+// Each prepared transaction belongs to the account that asked for it. Another account cannot
+// execute it even if it somehow learned the ID.
+const prepared = new Map<string, { accountId: string; command: string; bytes: string; summary: string; expires: number }>();
+export function rememberPrepared(accountId: string, command: string, bytes: string, summary = ""): string {
   for (const [id, value] of prepared) if (value.expires <= Date.now()) prepared.delete(id);
   if (prepared.size >= 100) throw new Error('Too many pending transactions. Wait for them to expire.');
   const id = randomUUID();
-  prepared.set(id, { command, bytes, summary, expires: Date.now() + 120_000 });
+  prepared.set(id, { accountId, command, bytes, summary, expires: Date.now() + 120_000 });
   return id;
 }
-export async function executePrepared(id: string, approvalId: string) {
+export async function executePrepared(account: AccountContext, id: string, approvalId: string) {
   if ((await passkeyStatus()).revoked) throw new Error('Wallet access is locked.');
   const transaction = prepared.get(id);
-  if (!transaction || transaction.expires <= Date.now()) throw new Error('Transaction missing, used, or expired. Prepare a new command.');
+  // A foreign account's transaction reads exactly like a missing one, and burns no approval.
+  if (!transaction || transaction.accountId !== account.accountId || transaction.expires <= Date.now()) throw new Error('Transaction missing, used, or expired. Prepare a new command.');
   const hash = createHash('sha256').update(JSON.stringify({ action: 'execute-wallet-command', id, command: transaction.command, summary: transaction.summary })).digest('hex');
   await consumeApproval(approvalId, hash);
   // Claim before any asynchronous work: concurrent requests cannot submit twice.
@@ -25,7 +29,7 @@ export async function executePrepared(id: string, approvalId: string) {
   if (!directory || !path.isAbsolute(directory)) throw new Error('Configure the trusted backend SUI_SIGNER_STATE_DIR.');
   const info = await stat(directory);
   if (!info.isDirectory() || (info.mode & 0o077) || info.uid !== process.getuid?.()) throw new Error('Signer state must be private and owned by the trusted backend user.');
-  const mcp = await connectWalletMcp();
+  const mcp = await connectWalletMcp(account);
   try {
     const simulation = await mcp.callTool({ name: 'estimate_gas', arguments: { transactionBase64: transaction.bytes } });
     if ((await passkeyStatus()).revoked) throw new Error("Wallet access is locked.");
@@ -41,7 +45,7 @@ export async function executePrepared(id: string, approvalId: string) {
     const proposal = transaction.command.match(/^execute (swap|payment) (prop_[0-9a-f]{10})$/);
     if (!result.isError && confirmation?.confirmed === true && typeof confirmation.digest === "string" && proposal) {
       try {
-        await recordProposalExecution(proposal[2]!, proposal[1] as "swap" | "payment", confirmation.digest);
+        await recordProposalExecution(proposal[2]!, proposal[1] as "swap" | "payment", confirmation.digest, account.proposalsDir);
       } catch {
         // The chain already confirmed: a UI storage failure must never imply a safe retry.
         return { ...result, content: [...(result.content ?? []), { type: "text" as const, text: "Confirmed on chain, but the proposal card could not be updated. Check the digest before retrying." }] };

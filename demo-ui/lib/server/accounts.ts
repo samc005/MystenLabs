@@ -29,7 +29,7 @@ export interface Account {
   activatedAt?: string;
 }
 
-const accountsDir = () => process.env.SUI_ACCOUNTS_DIR || join(process.cwd(), ".accounts");
+export const accountsDir = () => process.env.SUI_ACCOUNTS_DIR || join(process.cwd(), ".accounts");
 const accountsFile = () => join(accountsDir(), "accounts.json");
 
 async function load(): Promise<Account[]> {
@@ -71,6 +71,11 @@ export function requireOwnerAddress(value: unknown): string {
 
 export async function getAccount(id: string): Promise<Account | undefined> {
   return (await load()).find((account) => account.id === id);
+}
+
+export async function getAccountByUser(userId: string): Promise<Account | undefined> {
+  if (!userId) return undefined;
+  return (await load()).find((account) => account.userId === userId);
 }
 
 export async function getAccountByOwner(ownerAddress: string): Promise<Account | undefined> {

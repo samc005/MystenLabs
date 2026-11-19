@@ -7,6 +7,7 @@ import { resolveWalletCommand } from "./wallet-intent";
 import type Anthropic from "@anthropic-ai/sdk";
 import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { mcpEnvFor, type AccountContext } from "./account-context";
 import { walletMcpDir, walletMcpEntry } from "./wallet-mcp";
 
 import { parseWalletCommand, assertToolAction } from "@/lib/wallet-policy";
@@ -20,22 +21,26 @@ export type ChatEvent =
   | { type: "done"; messages: Anthropic.Beta.BetaMessageParam[] }
   | { type: "error"; message: string };
 
-export async function connectWalletMcp(): Promise<Client> {
+/**
+ * Starts the wallet-mcp server for one account. The vault, agent address and proposals directory
+ * come from the account record. Nothing vault-related is read from this process's environment,
+ * so there is no way to fall back to a shared vault.
+ */
+export async function connectWalletMcp(account: AccountContext): Promise<Client> {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [walletMcpEntry()],
     cwd: walletMcpDir(),
     env: {
       ...getDefaultEnvironment(),
-      SUI_NETWORK: "testnet",
-      SUI_ADDRESS: process.env.SUI_ADDRESS ?? "",
       SUI_SIGNER_PORT: process.env.SUI_SIGNER_PORT ?? "38435",
       SUI_SIGNER_TOKEN: process.env.SUI_SIGNER_TOKEN ?? "",
       SUI_ENABLE_DIRECT_TRANSFER: "",
-      ...Object.fromEntries([
-        "SUI_VAULT_PACKAGE_ID", "SUI_VAULT_ID", "SUI_VAULT_AGENT_CAP_ID",
-        "SUI_POOL_PACKAGE_ID", "SUI_POOL_ID", "SUI_PROPOSALS_DIR",
-      ].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : [])),
+      // The trading pool is shared infrastructure, not per-account state.
+      ...Object.fromEntries(
+        ["SUI_POOL_PACKAGE_ID", "SUI_POOL_ID"].flatMap((key) => (process.env[key] ? [[key, process.env[key]!]] : [])),
+      ),
+      ...mcpEnvFor(account),
     },
     stderr: "ignore",
   });
@@ -61,12 +66,13 @@ export async function runChatTurn(
   history: Anthropic.Beta.BetaMessageParam[],
   send: (event: ChatEvent) => void,
   signal: AbortSignal,
+  account: AccountContext,
 ): Promise<void> {
   const last = history.at(-1);
   if (!last || last.role !== "user" || typeof last.content !== "string") throw new Error("Send a wallet command.");
   const command = await resolveWalletCommand(last.content, signal);
   const action = parseWalletCommand(command);
-  const mcp = await connectWalletMcp();
+  const mcp = await connectWalletMcp(account);
   try {
     assertToolAction(action, action.tool, action.args);
     const toolId = randomUUID();
@@ -79,7 +85,7 @@ export async function runChatTurn(
       const simulation = await mcp.callTool({ name: "estimate_gas", arguments: { transactionBase64: structured.transactionBytes } });
       if (simulation.isError) throw new Error("Simulation failed. Nothing was signed or submitted.");
       output += "\n" + toolResultText(simulation);
-      const id = rememberPrepared(command, structured.transactionBytes, output);
+      const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output);
       send({ type: "prepared", id, command, summary: output });
     }
     send({ type: "text", delta: output });

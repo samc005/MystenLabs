@@ -15,6 +15,16 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 8)}…${address.slice(-6)}`;
 }
 
+const ROLE_LABEL: Record<LocalWallet["role"], string> = {
+  vault: "Vault (what Cipher can spend)",
+  owner: "Owner (you)",
+  agent: "Agent (Cipher's key, pays gas)",
+};
+
+function explorerUrl(wallet: LocalWallet): string {
+  return wallet.kind === "object" ? `https://suiscan.xyz/testnet/object/${wallet.address}` : explorerAddressUrl(wallet.address);
+}
+
 /** Signed change in SUI since the previous refresh, per wallet address. */
 function useBalanceChanges(wallets: LocalWallet[]): Record<string, bigint> {
   const previous = useRef<Record<string, string | null>>({});
@@ -44,27 +54,25 @@ export function WalletPanel({ wallets, status, loading, onRefresh }: Props) {
   return (
     <section className="card">
       <div className="card-head spread">
-        <h2>Local wallets</h2>
+        <h2>Your account</h2>
         <button className="secondary small-btn" onClick={onRefresh} disabled={loading}>
           {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
       <p className="muted">
-        Read from <code>wallet-mcp/.wallet</code>. These are the keys the MCP server signs with. Balances come from
-        testnet.
+        Cipher spends from your vault, within the limits your owner wallet set. The agent key only pays gas. Balances
+        come from testnet.
       </p>
 
-      {wallets.length === 0 && !loading && (
-        <p className="empty">Set SUI_ADDRESS to the public testnet sender address.</p>
-      )}
+      {wallets.length === 0 && !loading && <p className="empty">No account loaded yet.</p>}
 
       {wallets.map((wallet) => {
         const change = changes[wallet.address];
         return (
           <div key={wallet.role} className={change !== undefined ? "wallet changed" : "wallet"}>
             <div>
-              <p className="wallet-label">{wallet.role}</p>
-              <a className="mono" href={explorerAddressUrl(wallet.address)} target="_blank" rel="noreferrer" title={wallet.address}>
+              <p className="wallet-label">{ROLE_LABEL[wallet.role]}</p>
+              <a className="mono" href={explorerUrl(wallet)} target="_blank" rel="noreferrer" title={wallet.address}>
                 {shortAddress(wallet.address)}
               </a>
             </div>

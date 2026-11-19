@@ -2,15 +2,17 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import { createSuiClient, getSuiBalance } from "@/lib/sui";
+import type { AccountContext } from "./account-context";
 
-export const WALLET_ROLES = ["sender", "receiver"] as const;
-export type LocalWalletRole = (typeof WALLET_ROLES)[number];
+/** owner: your wallet, signs limits. agent: Cipher's key, pays gas. vault: the money Cipher may spend. */
+export type WalletRole = "owner" | "agent" | "vault";
 
 export interface LocalWallet {
-  role: LocalWalletRole;
+  role: WalletRole;
+  /** An address for owner and agent, an object ID for the vault. */
   address: string;
+  kind: "address" | "object";
   network: string;
   /** Balance in MIST as a decimal string, or null when it could not be read. */
   balanceMist: string | null;
@@ -43,28 +45,34 @@ export function walletMcpStatus(): WalletMcpStatus {
   };
 }
 
-export function configuredWalletAddress(role: LocalWalletRole): string | undefined {
-  const value = role === "sender" ? process.env.SUI_ADDRESS : process.env.SUI_RECEIVER_ADDRESS;
-  if (!value) return undefined;
-  const address = normalizeSuiAddress(value);
-  return isValidSuiAddress(address) ? address : undefined;
+async function vaultBalanceMist(client: ReturnType<typeof createSuiClient>, vaultId: string): Promise<string | null> {
+  try {
+    const { object } = await client.getObject({ objectId: vaultId, include: { json: true } });
+    const balance = (object.json as { balance?: unknown } | null | undefined)?.balance;
+    return typeof balance === "string" && /^\d+$/.test(balance) ? balance : null;
+  } catch {
+    return null;
+  }
 }
 
-/** The configured public addresses, with live testnet balances. */
-export async function listLocalWallets(): Promise<LocalWallet[]> {
+/** This account's owner wallet, agent wallet and vault, with live testnet balances. */
+export async function listAccountWallets(account: AccountContext): Promise<LocalWallet[]> {
   const client = createSuiClient();
-  const found = await Promise.all(
-    WALLET_ROLES.map(async (role) => {
-      const address = configuredWalletAddress(role);
-      if (!address) return undefined;
-      let balanceMist: string | null = null;
-      try {
-        balanceMist = (await getSuiBalance(client, address)).toString();
-      } catch {
-        // Leave the balance unknown; the address is still useful.
-      }
-      return { role, address, network: "testnet", balanceMist };
-    }),
-  );
-  return found.filter((wallet): wallet is LocalWallet => wallet !== undefined);
+  const addressBalance = async (address: string): Promise<string | null> => {
+    try {
+      return (await getSuiBalance(client, address)).toString();
+    } catch {
+      return null; // Leave the balance unknown; the address is still useful.
+    }
+  };
+  const [owner, agent, vault] = await Promise.all([
+    addressBalance(account.ownerAddress),
+    addressBalance(account.agentAddress),
+    vaultBalanceMist(client, account.vaultId),
+  ]);
+  return [
+    { role: "vault", address: account.vaultId, kind: "object", network: "testnet", balanceMist: vault },
+    { role: "owner", address: account.ownerAddress, kind: "address", network: "testnet", balanceMist: owner },
+    { role: "agent", address: account.agentAddress, kind: "address", network: "testnet", balanceMist: agent },
+  ];
 }

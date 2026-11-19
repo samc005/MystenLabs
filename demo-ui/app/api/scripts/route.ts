@@ -2,9 +2,10 @@
 // list of scripts is allowed, and only one runs at a time.
 
 import { spawn } from "node:child_process";
+import { accountErrorResponse, requireAccount, type AccountContext } from "@/lib/server/account-context";
 import { rejectNonLocal } from "@/lib/server/local-only";
 import { ndjsonResponse } from "@/lib/ndjson";
-import { configuredWalletAddress, walletMcpDir } from "@/lib/server/wallet-mcp";
+import { walletMcpDir } from "@/lib/server/wallet-mcp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,6 +29,14 @@ export async function POST(request: Request) {
   const rejected = rejectNonLocal(request);
   if (rejected) return rejected;
 
+  // Only someone with an active account may run these, and `balance` reads their own agent.
+  let account: AccountContext;
+  try {
+    account = await requireAccount(request);
+  } catch (error) {
+    return accountErrorResponse(error) ?? Response.json({ error: "Could not load your account." }, { status: 500 });
+  }
+
   const { script } = (await request.json().catch(() => ({}))) as { script?: string };
   if (!script || !Object.hasOwn(SCRIPTS, script)) {
     return Response.json({ error: `Unknown script. Use one of: ${Object.keys(SCRIPTS).join(", ")}.` }, { status: 400 });
@@ -36,10 +45,7 @@ export async function POST(request: Request) {
     return Response.json({ error: `npm ${running} is still running.` }, { status: 409 });
   }
 
-  const address = script === "balance" ? configuredWalletAddress("sender") : undefined;
-  if (script === "balance" && !address) {
-    return Response.json({ error: "Set SUI_ADDRESS to the public testnet sender address." }, { status: 400 });
-  }
+  const address = script === "balance" ? account.agentAddress : undefined;
   const args = SCRIPTS[script as ScriptName];
   const command = `npm ${args.join(" ")}`;
   running = args.join(" ");
