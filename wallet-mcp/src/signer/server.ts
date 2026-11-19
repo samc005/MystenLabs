@@ -4,9 +4,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { join } from "node:path";
 import { bcs } from "@mysten/sui/bcs";
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import type { Keyring } from "./keyring.js";
 import {
   approvalRecord,
   maxRequestBytes,
+  provisionRequest,
   signerTimeoutMs,
   signerToken,
   signRequest,
@@ -38,16 +40,22 @@ export function createSignerServer(options: {
   token: string;
   stateDir: string;
   chainIdentifier: string;
-  keypair: Ed25519Keypair;
+  /** A single operator-owned key. Optional once per-account agent keys are minted by the keyring. */
+  keypair?: Ed25519Keypair;
+  /** Per-account agent keys. Each is only usable for transactions it sends and pays gas for itself. */
+  keyring?: Keyring;
   getCurrentEpoch: (signal: AbortSignal) => Promise<bigint>;
 }) {
+  if (!options.keypair && !options.keyring) throw new Error("The signer needs a keypair or a keyring.");
   const token = Buffer.from(`Bearer ${signerToken.parse(options.token)}`);
-  const address = options.keypair.toSuiAddress();
+  const legacyAddress = options.keypair?.toSuiAddress();
 
-  async function sign(request: IncomingMessage, signal: AbortSignal) {
-    if (request.method !== "POST" || request.url !== "/sign") {
-      throw new Refusal(404, "unknown_endpoint");
-    }
+  function resolveKey(address: string): Ed25519Keypair | undefined {
+    if (options.keypair && address === legacyAddress) return options.keypair;
+    return options.keyring?.get(address);
+  }
+
+  function authorize(request: IncomingMessage) {
     const authorization = Buffer.from(request.headers.authorization ?? "");
     if (authorization.length !== token.length || !timingSafeEqual(authorization, token)) {
       throw new Refusal(401, "unauthorized");
@@ -55,6 +63,24 @@ export function createSignerServer(options: {
     if (request.headers["content-type"] !== "application/json") {
       throw new Refusal(415, "expected_json");
     }
+  }
+
+  async function provision(request: IncomingMessage, signal: AbortSignal) {
+    authorize(request);
+    if (!options.keyring) throw new Refusal(404, "unknown_endpoint");
+    if (!provisionRequest.safeParse(await readRequest(request, signal)).success) {
+      throw new Refusal(400, "invalid_provision_request");
+    }
+    try {
+      return { address: await options.keyring.create() };
+    } catch (error) {
+      if (error instanceof Error && error.message === "keyring_full") throw new Refusal(507, "keyring_full");
+      throw error;
+    }
+  }
+
+  async function sign(request: IncomingMessage, signal: AbortSignal) {
+    authorize(request);
     const body = await readRequest(request, signal);
     if (typeof body === "object" && body !== null && "network" in body && body.network !== "testnet") {
       throw new Refusal(403, "wrong_network");
@@ -92,15 +118,18 @@ export function createSignerServer(options: {
       throw new Refusal(400, "invalid_transaction_bytes");
     }
     let expiration;
+    let signingKey: Ed25519Keypair | undefined;
     try {
       const data = bcs.TransactionData.parse(bytes);
       if (!bytes.equals(bcs.TransactionData.serialize(data).toBytes())) throw new Error();
       const { kind, sender, gasData } = data.V1;
       expiration = data.V1.expiration.ValidDuring;
+      // The key is chosen by the transaction's own sender, and that sender must also pay gas.
+      // A key can therefore never sign for, or sponsor, any other address.
+      signingKey = sender === gasData.owner ? resolveKey(sender) : undefined;
       if (
         !kind.ProgrammableTransaction ||
-        sender !== address ||
-        gasData.owner !== address ||
+        !signingKey ||
         expiration?.chain !== options.chainIdentifier ||
         expiration.minEpoch === null ||
         expiration.maxEpoch === null
@@ -131,8 +160,14 @@ export function createSignerServer(options: {
     );
     signal.throwIfAborted();
     if (approval.data.expiresAtMs <= Date.now()) throw new Refusal(403, "approval_expired");
-    const { signature } = await options.keypair.signTransaction(bytes);
+    const { signature } = await signingKey.signTransaction(bytes);
     return { proposalId, signature };
+  }
+
+  function route(request: IncomingMessage, signal: AbortSignal) {
+    if (request.method === "POST" && request.url === "/sign") return sign(request, signal);
+    if (request.method === "POST" && request.url === "/provision") return provision(request, signal);
+    return Promise.reject(new Refusal(404, "unknown_endpoint"));
   }
 
   return createServer({ headersTimeout: signerTimeoutMs, requestTimeout: signerTimeoutMs },
@@ -151,7 +186,7 @@ export function createSignerServer(options: {
         response.writeHead(status, { "content-type": "application/json", connection: "close" });
         response.end(JSON.stringify(body));
       }
-      void sign(request, controller.signal).then(
+      void route(request, controller.signal).then(
         (result) => send(200, result),
         (error: unknown) => {
           if (error instanceof Refusal) send(error.status, { error: error.code });

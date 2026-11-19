@@ -24,6 +24,12 @@ export const approvalRecord = signRequest.extend({
   expiresAtMs: z.number().int().positive(),
 });
 
+export const provisionRequest = z.strictObject({});
+
+export const provisionResponse = z.strictObject({
+  address: z.string().regex(/^0x[0-9a-f]{64}$/),
+});
+
 export const signResponse = z.strictObject({
   proposalId: identifier,
   signature: z.string().min(1),

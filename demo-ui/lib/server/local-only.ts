@@ -38,7 +38,8 @@ export function rejectNonLocal(request: Request): Response | null {
   if (!isLocalHost(request.headers.get("host"))) return forbidden("host");
   const origin = request.headers.get("origin");
   if (origin && !isLocalOrigin(origin)) return forbidden("origin");
-  if (request.method === "POST" && !request.headers.get("content-type")?.startsWith("application/json")) {
+  const hasBody = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+  if (hasBody && !request.headers.get("content-type")?.startsWith("application/json")) {
     return Response.json({ error: "Send a JSON body." }, { status: 415 });
   }
   return null;

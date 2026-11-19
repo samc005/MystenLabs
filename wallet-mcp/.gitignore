@@ -10,3 +10,6 @@ build/
 !.env.example
 
 !.env.signer.example
+
+# Signer state: approvals, consumed approvals and per-account agent keys. Never commit.
+.signer-state/
