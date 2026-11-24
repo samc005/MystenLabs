@@ -496,3 +496,31 @@ input:focus {
   margin: 0;
   flex: 1;
 }
+
+.account-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.account-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.account-hello {
+  font-weight: 600;
+}
+.account-who .small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

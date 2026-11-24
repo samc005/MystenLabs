@@ -1,8 +1,7 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { SignOutButton } from "@/components/SignOutButton";
+import { AccountBar } from "@/components/AccountBar";
 import { createSuiClient, explorerAddressUrl, FAUCET_PAGE_URL, formatSui, getSuiBalance, NETWORK } from "@/lib/sui";
 import { execute } from "@/lib/onboarding";
 import { ownerSigner, OwnerSignerError, startGoogleSignIn, type OwnerKind } from "@/lib/owner-signer";
@@ -81,6 +80,7 @@ export default function SettingsPage() {
       if (!response.ok || !body.account) throw new Error(body.error ?? "Could not save your name.");
       setMe((previous) => (previous ? { ...previous, account: body.account! } : previous));
       setNotice("Profile saved.");
+      window.dispatchEvent(new CustomEvent("cipher:profile-renamed", { detail: body.account.displayName }));
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -133,12 +133,7 @@ export default function SettingsPage() {
   return (
     <main className="page wide">
       <header className="masthead">
-        <p className="small">
-          <Link className="back" href="/chat">
-            ← Back to chat
-          </Link>{" "}
-          <SignOutButton />
-        </p>
+        <AccountBar link={{ href: "/chat", label: "← Back to chat" }} />
         <p className="eyebrow">
           <span className="pill">{NETWORK}</span> Coins here have no value
         </p>

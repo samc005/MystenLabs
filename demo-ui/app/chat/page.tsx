@@ -1,12 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { accountLabels } from "@/lib/display";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ScriptRunner } from "@/components/ScriptRunner";
-import { SignOutButton } from "@/components/SignOutButton";
+import { AccountBar } from "@/components/AccountBar";
 import { WalletPanel } from "@/components/WalletPanel";
 import { startGoogleSignIn } from "@/lib/owner-signer";
 import type { LocalWallet, WalletMcpStatus } from "@/lib/server/wallet-mcp";
@@ -70,12 +69,7 @@ export default function ChatDemo() {
   return (
     <main className="page wide">
       <header className="masthead">
-        <p className="small">
-          <Link className="back" href="/settings">
-            Account settings →
-          </Link>{" "}
-          <SignOutButton />
-        </p>
+        <AccountBar link={{ href: "/settings", label: "Account settings" }} />
         <p className="eyebrow">
           <span className="pill">testnet</span> Local only · Cipher (Claude) → wallet-mcp → Sui
         </p>
