@@ -58,27 +58,28 @@ export default function Home() {
           <>
             <div className="choices">
               <div className="choice">
-                <h2>New here?</h2>
-                <p className="muted">
-                  Create a wallet from your Google account. No seed phrase, and it works on any device.
-                </p>
-                <button onClick={() => void startGoogleSignIn("new")}>Create a new wallet</button>
+                <h2>Sign in</h2>
+                <p className="muted">Already using Cipher? Sign in with the Google account you set it up with.</p>
+                <button onClick={() => void startGoogleSignIn()}>Sign in with Google</button>
               </div>
               <div className="choice">
-                <h2>Already have a Sui wallet?</h2>
-                <p className="muted">
-                  Bring your Slush (or other Sui) wallet. Same address, same funds, now with Cipher.
-                </p>
+                <h2>Create an account</h2>
+                <p className="muted">New here? Get a wallet made from your Google account. No seed phrase, any device.</p>
+                <button className="secondary" onClick={() => void startGoogleSignIn("new")}>
+                  Create a new wallet
+                </button>
+              </div>
+              <div className="choice">
+                <h2>Import a wallet</h2>
+                <p className="muted">Have a Slush or other Sui wallet? Keep its address and funds, and use it with Cipher.</p>
                 <button className="secondary" onClick={() => void startGoogleSignIn("existing")}>
-                  Use my existing wallet
+                  Import my wallet
                 </button>
               </div>
             </div>
             <p className="muted small">
-              Both start with Google sign-in, which keeps your account tied to your email. Already set up?{" "}
-              <button className="link" onClick={() => void startGoogleSignIn()}>
-                Sign in
-              </button>
+              All three use Google sign-in, which keeps your Cipher account tied to your email. If you sign in without an
+              account yet, we will help you create or import one.
             </p>
           </>
         )}
