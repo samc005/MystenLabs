@@ -7,7 +7,7 @@ import { createSuiClient, formatSui, getSuiBalance } from "@/lib/sui";
 import { listAccountWallets } from "./wallet-mcp";
 import type { WalletAction } from "@/lib/wallet-policy";
 import type { AccountContext } from "./account-context";
-import { saveContact } from "./account-store";
+import { createRequest, saveContact } from "./account-store";
 import type { ChatEvent } from "./agent";
 
 type Send = (event: ChatEvent) => void;
@@ -89,6 +89,26 @@ export async function handleLocalAction(action: WalletAction, account: AccountCo
           : `Sure. Sign below to move ${args.amount} SUI from your vault back to your wallet.`,
       });
       send({ type: "owner_action", action: { kind: deposit ? "deposit" : "withdraw", amountMist: amountMist.toString() } });
+      return;
+    }
+    case "payment_request": {
+      const amountMist = parseToMist(args.amount);
+      if (amountMist <= 0n) {
+        send({ type: "text", delta: "The amount has to be more than zero." });
+        return;
+      }
+      const request = await createRequest(account.accountId, {
+        amountMist: amountMist.toString(),
+        from: args.from ?? null,
+        note: action.note ?? null,
+        receiver: account.ownerAddress,
+      });
+      const who = request.from ? ` to ${request.from}` : "";
+      send({
+        type: "text",
+        delta: `Here's your request for ${args.amount} SUI${request.note ? ` for ${request.note}` : ""}. Send the QR code or link${who}; any Sui wallet like Slush can pay it in one tap. It goes to your wallet, and I'll mark it paid when it arrives.`,
+      });
+      send({ type: "payment_request", request });
       return;
     }
     default:

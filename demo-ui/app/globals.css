@@ -555,3 +555,20 @@ input:focus {
 .owner-action {
   margin: 4px 0;
 }
+
+.request-card .request-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+.request-qr {
+  display: block;
+  margin: 10px 0;
+  padding: 8px;
+  border-radius: 10px;
+  background: #fff;
+}
+.status-pill.cancelled {
+  color: var(--muted);
+}

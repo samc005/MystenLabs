@@ -9,6 +9,8 @@ import { isSpendProposal } from "@/lib/proposals";
 import { ProposalCard } from "./ProposalCard";
 import { RichText } from "./RichText";
 import { OwnerActionCard } from "./OwnerActionCard";
+import { PaymentRequestCard } from "./PaymentRequestCard";
+import type { PaymentRequestView } from "@/lib/payment-request";
 import type { OwnerAction } from "@/lib/owner-actions";
 import { TOOL_WORKING } from "@/lib/display";
 
@@ -17,6 +19,7 @@ type Item =
   | { kind: "assistant"; text: string; disclaimer?: string | null }
   | { kind: "tool"; id: string; name: string; input: unknown; output?: string; isError?: boolean }
   | { kind: "owner_action"; action: OwnerAction }
+  | { kind: "payment_request"; request: PaymentRequestView }
   | { kind: "error"; text: string };
 
 const SUGGESTIONS = [
@@ -111,6 +114,9 @@ export function ChatPanel({ onToolResult, labels }: Props) {
             break;
           case "text":
             appendText(event.delta);
+            break;
+          case "payment_request":
+            setItems((previous) => [...previous, { kind: "payment_request", request: event.request }]);
             break;
           case "owner_action":
             setItems((previous) => [...previous, { kind: "owner_action", action: event.action }]);
@@ -211,6 +217,7 @@ export function ChatPanel({ onToolResult, labels }: Props) {
               </div>
             );
           }
+          if (item.kind === "payment_request") return <PaymentRequestCard key={i} request={item.request} />;
           if (item.kind === "owner_action") return <OwnerActionCard key={i} action={item.action} onDone={onToolResult} />;
           if (item.kind === "error") return <div key={i} className="bubble error">{item.text}</div>;
           const pending = item.output === undefined;

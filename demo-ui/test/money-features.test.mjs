@@ -81,3 +81,36 @@ test('a payment that fails only because the vault is short offers the exact top-
   assert.match(offer.text, /move 0.41 SUI from your wallet/);
   assert.equal(local.topUpFor('Recipient is not on the allowlist.'), null);
 });
+
+test('payment request links follow the Sui Payment Kit format', () => {
+  const { paymentUri } = loadTs('lib/payment-request.ts');
+  const uri = paymentUri({ id: '33333333-3333-4333-8333-333333333333', amountMist: '50000000', receiver: A, note: 'pizza' });
+  const url = new URL(uri);
+  assert.equal(`${url.protocol}${url.pathname}`, 'sui:pay');
+  assert.equal(url.searchParams.get('receiver'), A);
+  assert.equal(url.searchParams.get('amount'), '50000000');
+  assert.equal(url.searchParams.get('coinType'), '0x2::sui::SUI');
+  assert.equal(url.searchParams.get('message'), 'pizza');
+  assert.ok(url.searchParams.get('nonce').length <= 36);
+  assert.throws(() => paymentUri({ id: 'x', amountMist: '0', receiver: A, note: null }));
+});
+
+test('incoming payments settle matching open requests once each', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'req-'));
+  process.env.SUI_ACCOUNTS_DIR = dir;
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = loadTs('lib/server/account-store.ts');
+  const id = '44444444-4444-4444-8444-444444444444';
+  const r1 = await store.createRequest(id, { amountMist: '50000000', from: 'Sam', note: 'pizza', receiver: A });
+  const r2 = await store.createRequest(id, { amountMist: '50000000', from: 'Alex', note: null, receiver: A });
+  const later = new Date(Date.now() + 1000).toISOString();
+  const settled = await store.settleRequests(id, [
+    { digest: 'D1', amountMist: '50000000', timestamp: later },
+    { digest: 'D2', amountMist: '70000000', timestamp: later },
+    { digest: 'D0', amountMist: '50000000', timestamp: '2000-01-01T00:00:00Z' },
+  ]);
+  const byId = Object.fromEntries(settled.map((r) => [r.id, r]));
+  assert.equal(byId[r1.id].status, 'paid');
+  assert.equal(byId[r1.id].paidDigest, 'D1');
+  assert.equal(byId[r2.id].status, 'open', 'one payment settles one request; old payments never count');
+});

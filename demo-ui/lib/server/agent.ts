@@ -12,6 +12,7 @@ import { walletMcpDir, walletMcpEntry } from "./wallet-mcp";
 
 import { parseWalletCommand, assertToolAction, LOCAL_TOOLS } from "@/lib/wallet-policy";
 import type { OwnerAction } from "@/lib/owner-actions";
+import type { PaymentRequestView } from "@/lib/payment-request";
 import { contactsFor } from "./account-store";
 import { handleLocalAction, topUpFor } from "./local-actions";
 import { rememberPrepared } from "./wallet-execution";
@@ -41,6 +42,8 @@ export type ChatEvent =
   | { type: "prepared"; id: string; command: string; summary: string }
   /** An owner action for the user's own wallet to sign in the browser. The server cannot sign it. */
   | { type: "owner_action"; action: OwnerAction }
+  /** A payment request the user can share as a QR code or link. */
+  | { type: "payment_request"; request: PaymentRequestView }
   | { type: "done"; messages: Anthropic.Beta.BetaMessageParam[] }
   | { type: "error"; message: string };
 

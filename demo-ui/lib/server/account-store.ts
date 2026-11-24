@@ -168,6 +168,52 @@ export async function labelsFor(accountId: string): Promise<Record<string, strin
   return Object.fromEntries(Object.entries(await contactsFor(accountId)).map(([name, address]) => [address, name]));
 }
 
+// ---- Payment requests ----
+
+export async function createRequest(
+  accountId: string,
+  input: { amountMist: string; from: string | null; note: string | null; receiver: string },
+): Promise<PaymentRequest> {
+  return mutate(accountId, "requests", (requests) => {
+    const open = requests.filter((request) => request.status === "open");
+    if (open.length >= 50) throw new Error("You have 50 open requests. Cancel some first.");
+    const request: PaymentRequest = { id: randomUUID(), ...input, createdAt: new Date().toISOString(), status: "open" };
+    requests.push(request);
+    return request;
+  });
+}
+
+/**
+ * Marks open requests paid when a matching incoming payment (same amount, to the owner wallet,
+ * after the request was made) shows up on-chain. Each payment settles at most one request.
+ */
+export async function settleRequests(
+  accountId: string,
+  incoming: { digest: string; amountMist: string; timestamp: string }[],
+): Promise<PaymentRequest[]> {
+  return mutate(accountId, "requests", (requests) => {
+    const used = new Set(requests.flatMap((request) => (request.paidDigest ? [request.paidDigest] : [])));
+    for (const request of requests.filter((r) => r.status === "open").sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+      const match = incoming.find(
+        (payment) => !used.has(payment.digest) && payment.amountMist === request.amountMist && payment.timestamp >= request.createdAt,
+      );
+      if (match) {
+        request.status = "paid";
+        request.paidDigest = match.digest;
+        used.add(match.digest);
+      }
+    }
+    return requests;
+  });
+}
+
+export async function cancelRequest(accountId: string, id: string): Promise<void> {
+  await mutate(accountId, "requests", (requests) => {
+    const request = requests.find((candidate) => candidate.id === id);
+    if (request?.status === "open") request.status = "cancelled";
+  });
+}
+
 // ---- Notes ----
 
 export const NOTE = /^[A-Za-z0-9][A-Za-z0-9 ,.'!?&()$#@:/+-]{0,79}$/;
