@@ -14,7 +14,7 @@ import { parseWalletCommand, assertToolAction, LOCAL_TOOLS } from "@/lib/wallet-
 import type { OwnerAction } from "@/lib/owner-actions";
 import type { PaymentRequestView } from "@/lib/payment-request";
 import { contactsFor } from "./account-store";
-import { handleLocalAction, topUpFor } from "./local-actions";
+import { handleLocalAction, topUpAndPayFor, topUpFor } from "./local-actions";
 import { rememberPrepared } from "./wallet-execution";
 import { cleanToolText, leadFor, presentBalance, presentVault } from "./chat-presenter";
 
@@ -96,7 +96,8 @@ export async function runChatTurn(
 ): Promise<void> {
   const last = history.at(-1);
   if (!last || last.role !== "user" || typeof last.content !== "string") throw new Error("Send a wallet command.");
-  const resolved = await resolveMessage(last.content, signal, await contactsFor(account.accountId));
+  const contacts = await contactsFor(account.accountId);
+  const resolved = await resolveMessage(last.content, signal, contacts);
   if (resolved.kind === "reply") {
     send({ type: "reply", text: resolved.text, disclaimer: resolved.disclaimer });
     send({ type: "done", messages: [] });
@@ -124,6 +125,13 @@ export async function runChatTurn(
       output += "\n" + toolResultText(simulation);
       const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output, action.note);
       send({ type: "prepared", id, command, summary: output });
+    }
+    const payWithTopUp = result.isError ? topUpAndPayFor(toolResultText(result), action, contacts) : null;
+    if (payWithTopUp) {
+      send({ type: "text", delta: payWithTopUp.text });
+      send({ type: "owner_action", action: payWithTopUp.action });
+      send({ type: "done", messages: [] });
+      return;
     }
     const topUp = result.isError ? topUpFor(toolResultText(result)) : null;
     if (topUp) {

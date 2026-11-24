@@ -7,6 +7,7 @@ import { loadTs } from './load-ts.mjs';
 
 const addr = (c) => `0x${c.repeat(64)}`;
 const plan = loadTs('lib/plan.ts');
+const approval = loadTs('lib/owner-approval.ts');
 const vault = { packageId: addr('a'), vaultId: addr('b'), ownerCapId: addr('c') };
 const DAY = 86_400_000;
 
@@ -25,16 +26,26 @@ async function setup(t, events) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   const fakeClient = { waitForTransaction: async () => ({ $kind: 'Transaction', Transaction: { events } }) };
   const store = loadTs('lib/server/account-store.ts');
+  const consumed = [];
+  const used = new Set();
   const plans = loadTs('lib/server/plans.ts', {
     '@/lib/sui': { createSuiClient: () => fakeClient },
     '@/lib/plan': plan,
     './agent': { connectWalletMcp: async () => { throw new Error('no signer in tests'); } },
-    './passkey': { passkeyStatus: async () => ({ revoked: false }) },
+    '@/lib/owner-approval': approval,
+    './passkey': {
+      passkeyStatus: async () => ({ revoked: false }),
+      consumeApproval: async (id, hash) => {
+        if (id !== 'ok' || used.has(id + hash)) throw new Error('Passkey approval is missing, expired, already used, or bound to different action data.');
+        used.add(id + hash);
+        consumed.push(hash);
+      },
+    },
     './account-store': store,
   });
   const account = { accountId: '55555555-5555-4555-8555-555555555555', ownerAddress: addr('0').replace(/0+$/, '').padEnd(66, 'd'), agentAddress: addr('e'), packageId: vault.packageId, vaultId: vault.vaultId, agentCapId: addr('f') };
   account.ownerAddress = addr('d');
-  return { plans, store, account };
+  return { plans, store, account, consumed };
 }
 
 const created = (overrides = {}) => ({
@@ -57,20 +68,20 @@ test('plans are recorded only from the owner\'s own approvals on this vault', as
     created({ sender: addr('7') }), // someone else's approval in the same transaction is ignored
     created({ json: { ...created().json, vault_id: addr('8') } }), // another vault is ignored
   ]);
-  const recorded = await plans.registerPlan(account, DIGEST, 'rent');
+  const recorded = await plans.registerPlan(account, DIGEST, 'rent', 'ok');
   assert.equal(recorded.count, 3);
   assert.equal(recorded.every, 'day');
   assert.equal(recorded.recipient, addr('1'));
   assert.equal(recorded.note, 'rent');
   assert.ok(Date.parse(recorded.payments[0].dueAt) <= now + 1000, 'the first payment is due right away');
-  assert.equal((await plans.registerPlan(account, DIGEST, null)).id, recorded.id, 'registering twice is a no-op');
+  assert.equal((await plans.registerPlan(account, DIGEST, null, 'ok')).id, recorded.id, 'registering twice is a no-op');
 });
 
 test('a transaction without the owner\'s approvals, or with mixed terms, is refused', async (t) => {
   const { plans, account } = await setup(t, [created({ sender: addr('7') })]);
-  await assert.rejects(plans.registerPlan(account, DIGEST, null), /did not create any payment approvals/);
+  await assert.rejects(plans.registerPlan(account, DIGEST, null, 'ok'), /did not create any payment approvals/);
   const mixed = await setup(t, [created(), created({ json: { ...created().json, intent_id: addr('6'), recipient: addr('2') } })]);
-  await assert.rejects(mixed.plans.registerPlan(mixed.account, DIGEST, null), /one recipient/);
+  await assert.rejects(mixed.plans.registerPlan(mixed.account, DIGEST, null, 'ok'), /one recipient/);
 });
 
 test('the scheduler leaves future payments alone and records failures without losing the payment', async (t) => {
@@ -79,7 +90,7 @@ test('the scheduler leaves future payments alone and records failures without lo
     created({ json: { vault_id: vault.vaultId, intent_id: addr('3'), recipient: addr('1'), amount: '1', expiry_ms: String(now + DAY) } }),
     created({ json: { vault_id: vault.vaultId, intent_id: addr('4'), recipient: addr('1'), amount: '1', expiry_ms: String(now + 2 * DAY) } }),
   ]);
-  await plans.registerPlan(account, DIGEST, null);
+  await plans.registerPlan(account, DIGEST, null, 'ok');
   // No active account record exists in this temp dir, so the scheduler has nothing to run.
   assert.deepEqual(await plans.runDuePlanPayments(now), { paid: 0, failed: 0 });
   const [stored] = await store.read(account.accountId, 'plans');
@@ -111,4 +122,36 @@ test('insights count only real spending, by period, recipient and who paid', () 
   assert.deepEqual(week.notes.map((n) => n.note), ['pizza']);
   assert.equal(computeInsights(entries, 'this_month', now).spentMist, '650000000');
   assert.match(describeInsights(week, (m) => (Number(m) / 1e9).toString()), /spent 0.35 SUI in the last 7 days, across 3 payments/);
+});
+
+const sha = async (value) => {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(value)));
+  return Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('');
+};
+
+test('a plan is recorded only with a passkey approval for exactly its terms', async (t) => {
+  const now = Date.now();
+  const events = [0, 1].map((i) =>
+    created({ json: { vault_id: vault.vaultId, intent_id: `0x${String(i).repeat(64)}`, recipient: addr('1'), amount: '100000000', expiry_ms: String(now + (i + 1) * DAY) } }),
+  );
+  const { plans, account, consumed } = await setup(t, events);
+  await assert.rejects(plans.registerPlan(account, DIGEST, null, 'forged'), /Passkey approval/);
+  await plans.registerPlan(account, DIGEST, null, 'ok');
+  // The server hashed the chain's terms exactly as the browser hashes the card's terms.
+  assert.deepEqual(consumed, [await sha(approval.planApproval(addr('1'), '100000000', 2))]);
+});
+
+test('a top-up payment is sent only for one approved intent with a matching passkey approval', async (t) => {
+  const pay = created({ json: { ...created().json, expiry_ms: String(Date.now() + 600_000) } });
+  const { plans, account, consumed } = await setup(t, [pay]);
+  await assert.rejects(plans.sendOwnerApprovedPayment(account, DIGEST, 'forged', null), /Passkey approval/);
+  // A valid approval reaches the signer step (stubbed to fail here), after checking these exact terms.
+  await assert.rejects(plans.sendOwnerApprovedPayment(account, DIGEST, 'ok', null), /SUI_SIGNER_STATE_DIR|no signer in tests/);
+  assert.deepEqual(consumed, [await sha(approval.paymentApproval(addr('1'), '100000000'))]);
+
+  const two = await setup(t, [pay, created({ json: { ...pay.json, intent_id: addr('6') } })]);
+  await assert.rejects(two.plans.sendOwnerApprovedPayment(two.account, DIGEST, 'ok', null), /exactly one payment/);
+  const expired = await setup(t, [created({ json: { ...pay.json, expiry_ms: String(Date.now() - 1) } })]);
+  await assert.rejects(expired.plans.sendOwnerApprovedPayment(expired.account, DIGEST, 'ok', null), /expired/);
+  assert.equal(expired.consumed.length, 0, 'an expired approval burns no passkey approval');
 });

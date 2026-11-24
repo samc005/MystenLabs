@@ -7,19 +7,45 @@ import { ownerSigner, OwnerSignerError, startGoogleSignIn, type OwnerKind } from
 import { createSuiClient, explorerTxUrl, formatSui } from "@/lib/sui";
 import { shortAddress } from "@/lib/display";
 import { planDeadlines } from "@/lib/plan";
+import { ownerApprovalPayload } from "@/lib/owner-approval";
+import { approveProposalWithEnrollment, hashProposal } from "@/lib/passkey";
 
-/** After the wallet signs, tell the server so it can verify the transaction on-chain and track it. */
-async function afterSigned(action: OwnerAction, digest: string): Promise<void> {
-  if (action.kind !== "plan" && action.kind !== "cancel_plan") return;
-  const response = await fetch(action.kind === "plan" ? "/api/plans" : "/api/plans/cancel", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(action.kind === "plan" ? { digest, note: action.note } : { digest, planId: action.planId }),
-  });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as { error?: string };
-    throw new Error(`Signed on-chain, but the app could not record it: ${body.error ?? response.status}. Refresh and check your plans.`);
+async function post(url: string, body: unknown): Promise<Record<string, unknown>> {
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Request failed (${response.status}).`);
+  return result;
+}
+
+/**
+ * After the wallet signs, tell the server so it can verify the transaction on-chain and act on it.
+ * Plans and top-up payments carry the passkey approval, which the server checks against the
+ * on-chain terms. Returns the payment's digest for a top-up payment.
+ */
+async function afterSigned(action: OwnerAction, digest: string, approvalId: string): Promise<string | null> {
+  if (action.kind === "pay") {
+    try {
+      const result = await post("/api/payments/approved", { digest, approvalId, note: action.note });
+      return typeof result.digest === "string" ? result.digest : null;
+    } catch (reason) {
+      throw new Error(
+        `Your vault was topped up, but the payment didn't go out: ${reason instanceof Error ? reason.message : String(reason)} ` +
+          "Nothing was sent. Ask me to send it again.",
+      );
+    }
   }
+  if (action.kind !== "plan" && action.kind !== "cancel_plan") return null;
+  try {
+    await post(
+      action.kind === "plan" ? "/api/plans" : "/api/plans/cancel",
+      action.kind === "plan" ? { digest, note: action.note, approvalId } : { digest, planId: action.planId },
+    );
+  } catch (reason) {
+    throw new Error(
+      `Signed on-chain, but the app could not record it: ${reason instanceof Error ? reason.message : String(reason)} Refresh and check your plans.`,
+    );
+  }
+  return null;
 }
 
 interface MeAccount {
@@ -29,18 +55,28 @@ interface MeAccount {
 }
 
 export function describeOwnerAction(action: OwnerAction): { title: string; detail: string; button: string } {
+  if (action.kind === "pay") {
+    return {
+      title: `Top up and send ${formatSui(BigInt(action.amountMist))} SUI to ${action.recipientLabel}`,
+      detail:
+        `Moves ${formatSui(BigInt(action.depositMist))} SUI from your wallet into your vault and approves exactly this payment ` +
+        `(${action.recipientLabel}, ${formatSui(BigInt(action.amountMist))} SUI${action.note ? `, “${action.note}”` : ""}). ` +
+        "Cipher sends it right after. One approval covers both.",
+      button: "Approve with passkey and send",
+    };
+  }
   if (action.kind === "deposit") {
     return {
       title: `Move ${formatSui(BigInt(action.amountMist))} SUI into your vault`,
       detail: "From your wallet into your vault, so Cipher can spend it within your limits.",
-      button: "Sign with my wallet",
+      button: "Approve with passkey",
     };
   }
   if (action.kind === "withdraw") {
     return {
       title: `Move ${formatSui(BigInt(action.amountMist))} SUI back to your wallet`,
       detail: "From your vault back into your wallet. Cipher can no longer spend it.",
-      button: "Sign with my wallet",
+      button: "Approve with passkey",
     };
   }
   if (action.kind === "plan") {
@@ -54,26 +90,26 @@ export function describeOwnerAction(action: OwnerAction): { title: string; detai
         `You approve all ${action.count} payments with this one signature. Cipher can only pay ${action.recipientLabel}, only ${each} SUI each, ` +
         `one per ${action.every}, ending by ${last}. Because you approve them up front, they don't count against your daily or weekly limits. ` +
         `You can cancel the rest anytime.${topUp}`,
-      button: "Sign the plan with my wallet",
+      button: "Approve the plan with passkey",
     };
   }
   if (action.kind === "cancel_plan") {
     return {
       title: `Cancel the rest of this plan`,
       detail: `${action.summary} Your wallet withdraws the ${action.intentIds.length} remaining approval${action.intentIds.length === 1 ? "" : "s"}, so they can never run.`,
-      button: "Sign with my wallet",
+      button: "Approve with passkey",
     };
   }
   return {
     title: `Make ${action.name} a trusted recipient`,
     detail: `Cipher will be able to pay ${action.name} (${shortAddress(action.address)}) directly, still within your limits.`,
-    button: "Sign with my wallet",
+    button: "Approve with passkey",
   };
 }
 
 /** Lets the owner's own wallet sign an action Cipher prepared. The server never sees a key. */
 export function OwnerActionCard({ action, onDone }: { action: OwnerAction; onDone: () => void }) {
-  const [state, setState] = useState<"idle" | "signing" | "done" | "cancelled">("idle");
+  const [state, setState] = useState<"idle" | "passkey" | "signing" | "done" | "cancelled">("idle");
   const [digest, setDigest] = useState<string | null>(null);
   const [error, setError] = useState<{ message: string; signIn: boolean } | null>(null);
   const text = describeOwnerAction(action);
@@ -84,12 +120,17 @@ export function OwnerActionCard({ action, onDone }: { action: OwnerAction; onDon
     try {
       const me = (await (await fetch("/api/accounts/me", { cache: "no-store" })).json()) as { account: MeAccount | null };
       if (!me.account?.vault) throw new Error("Your account is not set up yet.");
+      // Every vault change starts with the owner's passkey, then the owner's wallet signs.
+      setState("passkey");
+      const { approvalId } = await approveProposalWithEnrollment(await hashProposal(ownerApprovalPayload(action)));
+      setState("signing");
       const signer = await ownerSigner(me.account);
       const tx = buildOwnerActionTx(action, me.account.vault);
       const signed = await execute(createSuiClient(), signer, tx);
       setDigest(signed);
       try {
-        await afterSigned(action, signed);
+        const paid = await afterSigned(action, signed, approvalId);
+        if (paid) setDigest(paid);
       } catch (reason) {
         // Already on-chain: never offer to sign again, which could duplicate it.
         setError({ message: reason instanceof Error ? reason.message : String(reason), signIn: false });
@@ -111,7 +152,7 @@ export function OwnerActionCard({ action, onDone }: { action: OwnerAction; onDon
       <p className="muted small">{text.detail}</p>
       {state === "done" && digest && (
         <p className="small">
-          Done.{" "}
+          {action.kind === "pay" ? "Sent." : "Done."}{" "}
           <a className="receipt-link" href={explorerTxUrl(digest)} target="_blank" rel="noreferrer">
             View receipt ↗
           </a>
@@ -128,12 +169,12 @@ export function OwnerActionCard({ action, onDone }: { action: OwnerAction; onDon
           )}
         </p>
       )}
-      {(state === "idle" || state === "signing") && (
+      {(state === "idle" || state === "passkey" || state === "signing") && (
         <div className="actions">
-          <button onClick={() => void sign()} disabled={state === "signing"}>
-            {state === "signing" ? "Waiting for your wallet…" : text.button}
+          <button onClick={() => void sign()} disabled={state !== "idle"}>
+            {state === "passkey" ? "Confirm with your passkey…" : state === "signing" ? "Waiting for your wallet…" : text.button}
           </button>
-          <button className="ghost" onClick={() => setState("cancelled")} disabled={state === "signing"}>
+          <button className="ghost" onClick={() => setState("cancelled")} disabled={state !== "idle"}>
             Not now
           </button>
         </div>

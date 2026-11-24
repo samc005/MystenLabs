@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { policyApproval } from "@/lib/owner-approval";
+import { approveProposalWithEnrollment, hashProposal } from "@/lib/passkey";
 import { AccountBar } from "@/components/AccountBar";
 import { ContactsCard } from "@/components/ContactsCard";
 import { VaultMoneyCard } from "@/components/VaultMoneyCard";
@@ -99,6 +101,8 @@ export default function SettingsPage() {
       const { packageId, vaultId, ownerCapId } = me.account.vault;
       const changes = changesFor(form, policy);
       const tx = buildPolicyUpdateTx({ packageId, vaultId, ownerCapId, changes });
+      // Changing what Cipher may do with the vault needs the owner's passkey first.
+      await approveProposalWithEnrollment(await hashProposal(policyApproval(vaultId)));
       const signer = await ownerSigner(me.account);
       setSignerProblem(null);
       await execute(createSuiClient(), signer, tx);

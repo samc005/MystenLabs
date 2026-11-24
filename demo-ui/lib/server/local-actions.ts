@@ -6,6 +6,7 @@ import { parseToMist } from "@mysten/sui/utils";
 import { createSuiClient, formatSui, getSuiBalance } from "@/lib/sui";
 import { listAccountWallets } from "./wallet-mcp";
 import type { WalletAction } from "@/lib/wallet-policy";
+import type { OwnerAction } from "@/lib/owner-actions";
 import type { AccountContext } from "./account-context";
 import { createRequest, labelsFor, notesFor, saveContact } from "./account-store";
 import { recentActivity } from "./activity";
@@ -48,6 +49,29 @@ export function topUpFor(errorText: string): { amountMist: string; text: string 
   };
 }
 
+/**
+ * A send failed because the vault is short: offer one approval that moves the difference from the
+ * owner's wallet and sends the payment. Returns null when the error is not a shortfall.
+ */
+export function topUpAndPayFor(
+  errorText: string,
+  action: WalletAction,
+  contacts: Record<string, string>,
+): { text: string; action: OwnerAction } | null {
+  const topUp = topUpFor(errorText);
+  const args = action.args as Record<string, string>;
+  if (!topUp || action.tool !== "vault_spend" || !/^0x[0-9a-fA-F]{64}$/.test(args.to ?? "")) return null;
+  const recipient = args.to.toLowerCase();
+  const label = Object.entries(contacts).find(([, address]) => address.toLowerCase() === recipient)?.[0] ?? `${recipient.slice(0, 6)}…${recipient.slice(-4)}`;
+  const amountMist = parseToMist(args.amount).toString();
+  return {
+    text:
+      `Your vault is ${formatSui(BigInt(topUp.amountMist))} SUI short for that. Approve once below and I'll move the difference ` +
+      `from your wallet into your vault and send ${args.amount} SUI to ${label}, no second step.`,
+    action: { kind: "pay", recipient, recipientLabel: label, amountMist, depositMist: topUp.amountMist, note: action.note ?? null },
+  };
+}
+
 export async function handleLocalAction(action: WalletAction, account: AccountContext, send: Send): Promise<void> {
   const args = action.args as Record<string, string>;
   switch (action.tool) {
@@ -59,7 +83,7 @@ export async function handleLocalAction(action: WalletAction, account: AccountCo
       }
       send({
         type: "text",
-        delta: `Saved ${contact.name} (${contact.address}). Want Cipher to be able to pay them directly? Make them a trusted recipient below. Your wallet signs it.`,
+        delta: `Saved ${contact.name} (${contact.address}). Want Cipher to be able to pay them directly? Make them a trusted recipient below. You approve it with your passkey.`,
       });
       send({ type: "owner_action", action: { kind: "trust", address: contact.address, name: contact.name } });
       return;

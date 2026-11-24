@@ -80,6 +80,45 @@ test('a payment that fails only because the vault is short offers the exact top-
   assert.equal(offer.amountMist, '410000000');
   assert.match(offer.text, /move 0.41 SUI from your wallet/);
   assert.equal(local.topUpFor('Recipient is not on the allowlist.'), null);
+
+  // A short vault on a send offers one approval that tops up and pays, labelled with the contact.
+  const send = { tool: 'vault_spend', args: { amount: '0.5', to: A }, note: 'pizza' };
+  const short = 'The vault only holds 0.09 SUI, which is less than the requested 0.5 SUI.';
+  const pay = local.topUpAndPayFor(short, send, { Jovia: A });
+  assert.deepEqual(pay.action, { kind: 'pay', recipient: A, recipientLabel: 'Jovia', amountMist: '500000000', depositMist: '410000000', note: 'pizza' });
+  assert.match(pay.text, /no second step/);
+  assert.equal(local.topUpAndPayFor('Recipient is not on the allowlist.', send, {}), null);
+  assert.equal(local.topUpAndPayFor(short, { tool: 'stake', args: { amount: '1', validator: A } }, {}), null);
+});
+
+test('a top-up payment is one owner transaction: deposit, then one approval for that payment', () => {
+  const owner = loadTs('lib/owner-actions.ts');
+  const vault = { packageId: `0x${'a'.repeat(64)}`, vaultId: `0x${'b'.repeat(64)}`, ownerCapId: `0x${'c'.repeat(64)}` };
+  const action = { kind: 'pay', recipient: A, recipientLabel: 'Jovia', amountMist: '500000000', depositMist: '410000000', note: null };
+  const now = 1_700_000_000_000;
+  const data = owner.buildOwnerActionTx(action, vault, now).getData();
+  const calls = data.commands.filter((c) => c.MoveCall).map((c) => c.MoveCall.function);
+  assert.deepEqual(calls, ['deposit', 'create_spend_intent']);
+  const values = data.inputs.filter((i) => i.Pure).map((i) => Buffer.from(i.Pure.bytes, 'base64'));
+  assert.ok(values.some((b) => b.length === 8 && b.readBigUInt64LE() === BigInt(now + owner.PAY_APPROVAL_WINDOW_MS)), 'approval expires after the window');
+  const noTopUp = owner.buildOwnerActionTx({ ...action, depositMist: '0' }, vault, now).getData();
+  assert.deepEqual(noTopUp.commands.filter((c) => c.MoveCall).map((c) => c.MoveCall.function), ['create_spend_intent']);
+  assert.throws(() => owner.buildOwnerActionTx({ ...action, recipient: 'Jovia' }, vault), /full address/);
+});
+
+test('every owner action has a passkey payload, and plans and payments match what the server rebuilds', () => {
+  const approval = loadTs('lib/owner-approval.ts');
+  const kinds = [
+    { kind: 'deposit', amountMist: '1' }, { kind: 'withdraw', amountMist: '1' }, { kind: 'trust', address: A, name: 'Sam' },
+    { kind: 'cancel_plan', planId: 'p', intentIds: [B], summary: '' },
+  ];
+  for (const action of kinds) assert.match(approval.ownerApprovalPayload(action).action, /^owner-/);
+  const plan = { kind: 'plan', recipient: A.toUpperCase().replace('0X', '0x'), amountMist: '5', every: 'week', count: 3, startMs: 0, depositMist: '0', recipientLabel: 'Sam', note: null };
+  assert.deepEqual(approval.ownerApprovalPayload(plan), approval.planApproval(A, '5', 3));
+  assert.deepEqual(
+    approval.ownerApprovalPayload({ kind: 'pay', recipient: A, recipientLabel: 'Sam', amountMist: '5', depositMist: '1', note: null }),
+    approval.paymentApproval(A, '5'),
+  );
 });
 
 test('payment request links follow the Sui Payment Kit format', () => {

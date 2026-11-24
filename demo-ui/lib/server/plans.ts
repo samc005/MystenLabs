@@ -7,6 +7,7 @@
 // the contract enforces each one's recipient, amount, single use and deadline. The scheduler's
 // only freedom is timing inside each payment's window.
 
+import { createHash } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Transaction } from "@mysten/sui/transactions";
@@ -17,9 +18,15 @@ import { contextFor, type AccountContext } from "./account-context";
 import { listAccounts } from "./accounts";
 import { mutate, read, saveNote, type PaymentPlan } from "./account-store";
 import { connectWalletMcp } from "./agent";
-import { passkeyStatus } from "./passkey";
+import { paymentApproval, planApproval } from "@/lib/owner-approval";
+import { consumeApproval, passkeyStatus } from "./passkey";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Same bytes the browser hashed for the passkey challenge (lib/passkey.ts hashProposal). */
+function approvalHash(payload: unknown): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
 
 interface ChainEvent {
   packageId: string;
@@ -48,8 +55,11 @@ async function ownerEvents(account: AccountContext, digest: string, name: string
     .map((event) => event.json!);
 }
 
-/** Records a plan from the owner's transaction. Every term comes from the chain. */
-export async function registerPlan(account: AccountContext, digest: string, note: string | null): Promise<PaymentPlan> {
+/**
+ * Records a plan from the owner's transaction. Every term comes from the chain, and the owner's
+ * passkey approval must match those terms: without it the scheduler never runs the plan.
+ */
+export async function registerPlan(account: AccountContext, digest: string, note: string | null, approvalId: string): Promise<PaymentPlan> {
   const created = await ownerEvents(account, digest, "SpendIntentCreated");
   if (created.length === 0) throw new Error("That transaction did not create any payment approvals on your vault.");
   if (created.length > MAX_PLAN_PAYMENTS) throw new Error("Too many payments for one plan.");
@@ -68,6 +78,10 @@ export async function registerPlan(account: AccountContext, digest: string, note
   const step = intents.length > 1 ? intents[1].expiry - intents[0].expiry : DAY_MS;
   const every: "day" | "week" = step >= 7 * DAY_MS ? "week" : "day";
   const interval = every === "week" ? 7 * DAY_MS : DAY_MS;
+
+  const existing = (await read(account.accountId, "plans")).find((plan) => plan.createdDigest === digest);
+  if (existing) return existing;
+  await consumeApproval(approvalId, approvalHash(planApproval(first.recipient, first.amount, intents.length)));
 
   return mutate(account.accountId, "plans", (plans) => {
     const existing = plans.find((plan) => plan.createdDigest === digest);
@@ -106,6 +120,32 @@ export async function recordCancellation(account: AccountContext, planId: string
     }
     return plan;
   });
+}
+
+/**
+ * Sends a one-off payment the owner approved in a single step: their transaction topped up the
+ * vault and created exactly one SpendIntent, and their passkey approved that recipient and
+ * amount. The server reads both terms from the chain, checks the passkey approval against them,
+ * then submits spend_approved. No second prompt.
+ */
+export async function sendOwnerApprovedPayment(
+  account: AccountContext,
+  digest: string,
+  approvalId: string,
+  note: string | null,
+): Promise<{ digest: string; recipient: string; amountMist: string }> {
+  if ((await passkeyStatus()).revoked) throw new Error("Wallet access is locked.");
+  const created = await ownerEvents(account, digest, "SpendIntentCreated");
+  if (created.length !== 1) throw new Error("That transaction should approve exactly one payment.");
+  const [event] = created;
+  const intentId = normalizeSuiAddress(String(event.intent_id));
+  const recipient = normalizeSuiAddress(String(event.recipient));
+  const amountMist = String(event.amount);
+  if (Number(event.expiry_ms) <= Date.now()) throw new Error("That payment approval has expired. Nothing was sent.");
+  await consumeApproval(approvalId, approvalHash(paymentApproval(recipient, amountMist)));
+  const paid = await submitPlanPayment(account, intentId);
+  if (note) await saveNote(account.accountId, paid, note).catch(() => undefined);
+  return { digest: paid, recipient, amountMist };
 }
 
 /**
