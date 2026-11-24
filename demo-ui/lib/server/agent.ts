@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { resolveWalletCommand } from "./wallet-intent";
+import { resolveMessage } from "./wallet-intent";
 // The chat demo's agent loop: Claude on the Messages API, with tools that come
 // from the real wallet-mcp server. The server is started over stdio exactly as
 // Claude Code would start it from .mcp.json, and every tool call goes through it.
@@ -15,6 +15,8 @@ import { rememberPrepared } from "./wallet-execution";
 
 export type ChatEvent =
   | { type: "text"; delta: string }
+  /** Plain-text reply: a clarifying question or a general answer. Never an action. */
+  | { type: "reply"; text: string; disclaimer: string | null }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError: boolean }
   | { type: "prepared"; id: string; command: string; summary: string }
@@ -70,7 +72,13 @@ export async function runChatTurn(
 ): Promise<void> {
   const last = history.at(-1);
   if (!last || last.role !== "user" || typeof last.content !== "string") throw new Error("Send a wallet command.");
-  const command = await resolveWalletCommand(last.content, signal);
+  const resolved = await resolveMessage(last.content, signal);
+  if (resolved.kind === "reply") {
+    send({ type: "reply", text: resolved.text, disclaimer: resolved.disclaimer });
+    send({ type: "done", messages: [] });
+    return;
+  }
+  const command = resolved.command;
   const action = parseWalletCommand(command);
   const mcp = await connectWalletMcp(account);
   try {
@@ -88,7 +96,11 @@ export async function runChatTurn(
       const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output);
       send({ type: "prepared", id, command, summary: output });
     }
-    send({ type: "text", delta: output });
+    // The tool card already shows the full output; the assistant line says what happens next.
+    if (result.isError) send({ type: "text", delta: "That didn't go through. The details are above." });
+    else if (typeof structured?.transactionBytes === "string") {
+      send({ type: "text", delta: "I prepared this transaction and simulated it. Nothing is sent until you approve it below." });
+    }
     send({ type: "done", messages: [] });
   } finally {
     await mcp.close().catch(() => undefined);
