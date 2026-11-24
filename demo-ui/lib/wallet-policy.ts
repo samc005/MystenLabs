@@ -93,7 +93,19 @@ function resolveContact(value: string, contacts: Record<string, string>): string
   return contact[1];
 }
 
-export function commandFromIntent(value: unknown, contacts: Record<string, string> = {}): string {
+function resolveValidator(value: string, validators: Record<string, string>): string {
+  if (/^0x[0-9a-fA-F]{64}$/.test(value)) return value;
+  const match = Object.entries(validators).find(([name]) => name.toLowerCase() === value.toLowerCase());
+  if (!match) throw new Error(`"${value}" isn't one of the validators you let Cipher stake with. Add it in Settings, or use its full address.`);
+  return match[1];
+}
+
+export function commandFromIntent(
+  value: unknown,
+  contacts: Record<string, string> = {},
+  /** Name -> address for the validators this vault allows. */
+  validators: Record<string, string> = {},
+): string {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid wallet intent.');
   const v = value as Record<string, unknown>;
   if (typeof v.action !== 'string' || !Object.hasOwn(FIELDS, v.action)) throw new Error('Unsupported request. This assistant only performs wallet actions.');
@@ -107,6 +119,7 @@ export function commandFromIntent(value: unknown, contacts: Record<string, strin
     throw new Error('Incomplete or unexpected wallet intent fields.');
   }
   if (typeof v.recipient === 'string') v.recipient = resolveContact(v.recipient, contacts);
+  if (typeof v.validator === 'string') v.validator = resolveValidator(v.validator, validators);
   const withNote = typeof v.note === 'string' && v.note.trim() ? ` for ${v.note.trim()}` : '';
   let command = v.action;
   if (v.action === 'payment proposal') command = `request payment ${v.amount} SUI to ${v.recipient}`;

@@ -21,7 +21,7 @@ const intentProperties = {
   },
   amount: { type: 'string', description: 'Decimal digits only, e.g. "0.05". Use only a number the user wrote.' },
   recipient: { type: 'string', description: 'A full 0x address the user wrote, or a contact name exactly as listed.' },
-  validator: { type: 'string', description: 'A full 0x validator address the user wrote.' },
+  validator: { type: 'string', description: 'A full 0x validator address the user wrote, or one of the approved validator names.' },
   sell: { type: 'string', enum: ['SUI', 'tUSDC'] },
   buy: { type: 'string', enum: ['SUI', 'tUSDC'] },
   address: { type: 'string', description: 'save contact: the full 0x address the user wrote.' },
@@ -50,7 +50,7 @@ Call wallet_intent when the user clearly wants ONE of these actions and every re
 - payment plan: recurring payments, "pay Sam 0.1 every day for 10 days", "send Friend 0.5 weekly for 4 weeks" (amount, recipient, every, count, optional note). Only daily or weekly; if they give another schedule or no end, clarify.
 - spending: questions about their own spending, "how much did I spend this week", "who do I pay the most", "my spending this month" (optional period)
 - withdraw: move SUI from their vault back to their wallet, "take 0.2 out of my vault", "empty 0.1 from the vault" (amount)
-Include ONLY the fields for that action. Write amounts as digits ("five" -> "5", "half a sui" -> "0.5"). Recipients: a full 0x address copied exactly, or one of these saved contact names: {{CONTACTS}}. "my friend" may mean a contact named Friend. Never invent, shorten, complete or guess an address, amount, asset or validator.
+Include ONLY the fields for that action. Write amounts as digits ("five" -> "5", "half a sui" -> "0.5"). Recipients: a full 0x address copied exactly, or one of these saved contact names: {{CONTACTS}}. "my friend" may mean a contact named Friend. Validators: a full 0x address, or one of the validators the owner approved: {{VALIDATORS}}. If they don't name a validator, ask which one. Never invent, shorten, complete or guess an address, amount, asset or validator.
 
 Otherwise call reply, with one of these types:
 - "clarify": they want an action but something is missing or there is more than one action. In one short sentence, say what is missing and ask them to send it again, e.g. "How much should I send Sam? Try: send 0.05 sui to Sam".
@@ -92,6 +92,8 @@ export async function resolveMessage(
   signal: AbortSignal,
   /** Name -> address for this account (server-configured plus the user's own). */
   contacts: Record<string, string> = contactsFromEnv(),
+  /** Name -> address for the validators this vault lets Cipher stake with. */
+  validators: Record<string, string> = {},
 ): Promise<ResolvedMessage> {
   if (text.length > 2000) throw new Error('Request too long.');
   // Exact commands skip the model entirely.
@@ -107,7 +109,10 @@ export async function resolveMessage(
     {
       model: process.env.WALLET_INTENT_MODEL ?? 'claude-opus-5-5',
       max_tokens: 1024,
-      system: SYSTEM.replace('{{CONTACTS}}', names.length ? names.map((n) => JSON.stringify(n)).join(', ') : '(none saved)'),
+      system: SYSTEM.replace('{{CONTACTS}}', names.length ? names.map((n) => JSON.stringify(n)).join(', ') : '(none saved)').replace(
+        '{{VALIDATORS}}',
+        Object.keys(validators).length ? Object.keys(validators).map((n) => JSON.stringify(n)).join(', ') : '(none approved yet)',
+      ),
       messages: [{ role: 'user', content: text }],
       tools: [
         {
@@ -152,7 +157,7 @@ export async function resolveMessage(
   // The same checks as before. A failure becomes a request to rephrase, never an action.
   try {
     assertIntentGrounded(normalizeNumberWords(text), input);
-    return { kind: 'command', command: commandFromIntent(input, contacts) };
+    return { kind: 'command', command: commandFromIntent(input, contacts, validators) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'I could not turn that into a wallet action.';
     return {

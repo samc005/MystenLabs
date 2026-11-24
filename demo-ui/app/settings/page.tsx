@@ -5,6 +5,7 @@ import { policyApproval } from "@/lib/owner-approval";
 import { approveProposalWithEnrollment, hashProposal } from "@/lib/passkey";
 import { AccountBar } from "@/components/AccountBar";
 import { ContactsCard } from "@/components/ContactsCard";
+import { AgentPermissionsCard } from "@/components/AgentPermissionsCard";
 import { VaultMoneyCard } from "@/components/VaultMoneyCard";
 import { createSuiClient, explorerAddressUrl, FAUCET_PAGE_URL, formatSui, getSuiBalance, NETWORK } from "@/lib/sui";
 import { execute } from "@/lib/onboarding";
@@ -231,6 +232,14 @@ export default function SettingsPage() {
 
         {me?.account?.vault && (
           <ContactsCard trusted={policy?.allowedRecipients ?? []} onChanged={() => void refresh().catch(() => undefined)} />
+        )}
+
+        {me?.account?.vault && policy && (
+          <AgentPermissionsCard
+            account={{ ...me.account, vault: me.account.vault }}
+            policy={policy}
+            onSaved={() => void refresh().catch(() => undefined)}
+          />
         )}
 
         {form && policy && (

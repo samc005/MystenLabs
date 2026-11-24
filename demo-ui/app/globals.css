@@ -576,3 +576,10 @@ input:focus {
   display: inline-flex;
   gap: 8px;
 }
+
+/* Indented limits under a "What Cipher can do" switch. */
+.permission-group {
+  margin: 0 0 16px 22px;
+  padding-left: 14px;
+  border-left: 2px solid var(--border, rgba(127, 127, 127, 0.25));
+}

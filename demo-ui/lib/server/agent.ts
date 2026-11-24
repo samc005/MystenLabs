@@ -17,6 +17,15 @@ import { contactsFor } from "./account-store";
 import { handleLocalAction, topUpAndPayFor, topUpFor } from "./local-actions";
 import { rememberPrepared } from "./wallet-execution";
 import { cleanToolText, leadFor, presentBalance, presentVault } from "./chat-presenter";
+import { readVaultPolicy, type PolicyReader } from "@/lib/owner-tx";
+import { createSuiClient } from "@/lib/sui";
+import { validatorNamesFor } from "./validators";
+
+/** The proposal ID when wallet-mcp says the owner's standing rule already covers this swap. */
+export function autoSwapProposal(output: string): string | null {
+  if (!/standing trade rule already covers this swap/.test(output)) return null;
+  return output.match(/Proposal ID: (prop_[0-9a-f]{10})/)?.[1] ?? null;
+}
 
 /** What the user reads in chat for a wallet result. Falls back to the cleaned tool text. */
 async function presentResult(tool: string, output: string, isError: boolean, prepared: boolean, account: AccountContext): Promise<string> {
@@ -97,14 +106,20 @@ export async function runChatTurn(
   const last = history.at(-1);
   if (!last || last.role !== "user" || typeof last.content !== "string") throw new Error("Send a wallet command.");
   const contacts = await contactsFor(account.accountId);
-  const resolved = await resolveMessage(last.content, signal, contacts);
+  // Approved validators by name, so "stake 1 SUI with Mysten 1" works. Only looked up for staking.
+  const validators = /\bstak/i.test(last.content)
+    ? await readVaultPolicy(createSuiClient() as unknown as PolicyReader, account.vaultId)
+        .then((policy) => validatorNamesFor(policy.allowedValidators ?? []))
+        .catch(() => ({}))
+    : {};
+  const resolved = await resolveMessage(last.content, signal, contacts, validators);
   if (resolved.kind === "reply") {
     send({ type: "reply", text: resolved.text, disclaimer: resolved.disclaimer });
     send({ type: "done", messages: [] });
     return;
   }
-  const command = resolved.command;
-  const action = parseWalletCommand(command);
+  let command = resolved.command;
+  let action = parseWalletCommand(command);
   if (LOCAL_TOOLS.has(action.tool)) {
     await handleLocalAction(action, account, send);
     send({ type: "done", messages: [] });
@@ -115,9 +130,20 @@ export async function runChatTurn(
     assertToolAction(action, action.tool, action.args);
     const toolId = randomUUID();
     send({ type: "tool_call", id: toolId, name: action.tool, input: action.args });
-    const result = await mcp.callTool({ name: action.tool, arguments: action.args });
+    let result = await mcp.callTool({ name: action.tool, arguments: action.args });
     let output = toolResultText(result);
     send({ type: "tool_result", id: toolId, output, isError: Boolean(result.isError) });
+    // A swap the owner's standing rule already covers needs no owner approval: prepare it right
+    // away so the user confirms it with their passkey in the same turn. The contract re-checks
+    // the rule when it runs.
+    const auto = action.tool === "propose_trade" && !result.isError ? autoSwapProposal(output) : null;
+    if (auto) {
+      command = `execute swap ${auto}`;
+      action = parseWalletCommand(command);
+      assertToolAction(action, action.tool, action.args);
+      result = await mcp.callTool({ name: action.tool, arguments: action.args });
+      output = toolResultText(result);
+    }
     const structured = result.structuredContent as { transactionBytes?: unknown } | undefined;
     if (!result.isError && typeof structured?.transactionBytes === "string") {
       const simulation = await mcp.callTool({ name: "estimate_gas", arguments: { transactionBase64: structured.transactionBytes } });

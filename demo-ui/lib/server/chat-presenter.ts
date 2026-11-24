@@ -71,7 +71,10 @@ export function cleanToolText(text: string): string {
 /** A friendly lead-in for each kind of result. */
 export function leadFor(tool: string, prepared: boolean): string | null {
   if (prepared) return "Here's the transaction. I simulated it and nothing has been sent. Review it below and approve it if it looks right.";
-  if (tool === "propose_spend" || tool === "propose_trade") return "I've asked for your approval. Approve or reject it below.";
+  if (tool === "propose_trade") {
+    return "That swap is outside the swap rule you set, so I can't run it. Check the limits and the trading balance in Settings → What Cipher can do, then ask again.";
+  }
+  if (tool === "propose_spend") return "I've asked for your approval. Approve or reject it below.";
   if (tool === "swap_quote") return "Here's the current quote:";
   if (tool === "list_validators") return "Here are the validators you can stake with:";
   return null;
