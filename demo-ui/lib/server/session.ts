@@ -13,6 +13,8 @@ export interface SessionUser {
   sub: string;
   email: string;
   name?: string;
+  /** This user's zkLogin address, derived server-side through Enoki from the verified Google token. */
+  zkAddress?: string;
 }
 
 function signingKey(): Buffer {
@@ -71,6 +73,9 @@ export function userFromRequest(request: Request, now = Date.now()): SessionUser
     sub: payload.sub,
     email: typeof payload.email === "string" ? payload.email : "",
     name: typeof payload.name === "string" ? payload.name : undefined,
+    ...(typeof payload.zkAddress === "string" && /^0x[0-9a-f]{64}$/.test(payload.zkAddress)
+      ? { zkAddress: payload.zkAddress }
+      : {}),
   };
 }
 

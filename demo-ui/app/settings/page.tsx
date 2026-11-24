@@ -1,11 +1,15 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { SignOutButton } from "@/components/SignOutButton";
+import { policyApproval } from "@/lib/owner-approval";
+import { approveProposalWithEnrollment, hashProposal } from "@/lib/passkey";
+import { AccountBar } from "@/components/AccountBar";
+import { ContactsCard } from "@/components/ContactsCard";
+import { AgentPermissionsCard } from "@/components/AgentPermissionsCard";
+import { VaultMoneyCard } from "@/components/VaultMoneyCard";
 import { createSuiClient, explorerAddressUrl, FAUCET_PAGE_URL, formatSui, getSuiBalance, NETWORK } from "@/lib/sui";
 import { execute } from "@/lib/onboarding";
-import { loadWallet, type DemoWallet } from "@/lib/wallet";
+import { ownerSigner, OwnerSignerError, startGoogleSignIn, type OwnerKind } from "@/lib/owner-signer";
 import { buildPolicyUpdateTx, normalizeRecipients, readVaultPolicy, type PolicyReader, type VaultPolicy } from "@/lib/owner-tx";
 import { changesFor, formFrom, type PermissionForm } from "@/lib/permission-form";
 
@@ -13,6 +17,7 @@ interface AccountView {
   id: string;
   status: "pending" | "active";
   ownerAddress: string;
+  ownerKind: OwnerKind;
   agentAddress: string;
   vault: { packageId: string; vaultId: string; ownerCapId: string; agentCapId: string } | null;
   displayName: string | null;
@@ -28,7 +33,6 @@ const errorMessage = (error: unknown) => (error instanceof Error ? error.message
 
 export default function SettingsPage() {
   const [me, setMe] = useState<Me | null>(null);
-  const [wallet, setWallet] = useState<DemoWallet | null>(null);
   const [balance, setBalance] = useState<bigint | null>(null);
   const [policy, setPolicy] = useState<VaultPolicy | null>(null);
   const [form, setForm] = useState<PermissionForm | null>(null);
@@ -47,12 +51,11 @@ export default function SettingsPage() {
         }
         setMe(body);
         setName(body.account.displayName ?? body.user.name ?? "");
-        setWallet(loadWallet("owner") ?? null);
       })
       .catch(() => setError("Could not load your account. Refresh the page."));
   }, []);
 
-  const ownerMatches = !!wallet && !!me?.account && wallet.address === me.account.ownerAddress;
+  const [signerProblem, setSignerProblem] = useState<OwnerSignerError | null>(null);
 
   const refresh = useCallback(async () => {
     const vault = me?.account?.vault;
@@ -61,8 +64,8 @@ export default function SettingsPage() {
     const next = await readVaultPolicy(client as unknown as PolicyReader, vault.vaultId);
     setPolicy(next);
     setForm(formFrom(next));
-    if (wallet) setBalance(await getSuiBalance(client, wallet.address));
-  }, [me, wallet]);
+    setBalance(await getSuiBalance(client, me.account!.ownerAddress));
+  }, [me]);
 
   useEffect(() => {
     refresh().catch((reason) => setError(errorMessage(reason)));
@@ -82,6 +85,7 @@ export default function SettingsPage() {
       if (!response.ok || !body.account) throw new Error(body.error ?? "Could not save your name.");
       setMe((previous) => (previous ? { ...previous, account: body.account! } : previous));
       setNotice("Profile saved.");
+      window.dispatchEvent(new CustomEvent("cipher:profile-renamed", { detail: body.account.displayName }));
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -90,7 +94,7 @@ export default function SettingsPage() {
   }
 
   async function savePermissions() {
-    if (!wallet || !me?.account?.vault || !policy || !form) return;
+    if (!me?.account?.vault || !policy || !form) return;
     setBusy("permissions");
     setError(null);
     setNotice(null);
@@ -98,11 +102,16 @@ export default function SettingsPage() {
       const { packageId, vaultId, ownerCapId } = me.account.vault;
       const changes = changesFor(form, policy);
       const tx = buildPolicyUpdateTx({ packageId, vaultId, ownerCapId, changes });
-      await execute(createSuiClient(), wallet.keypair, tx);
+      // Changing what Cipher may do with the vault needs the owner's passkey first.
+      await approveProposalWithEnrollment(await hashProposal(policyApproval(vaultId)));
+      const signer = await ownerSigner(me.account);
+      setSignerProblem(null);
+      await execute(createSuiClient(), signer, tx);
       await refresh();
       setNotice("Permissions updated on-chain. Your agent follows the new rules from now on.");
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (reason instanceof OwnerSignerError) setSignerProblem(reason);
+      else setError(errorMessage(reason));
     } finally {
       setBusy(null);
     }
@@ -120,17 +129,18 @@ export default function SettingsPage() {
     }
   }
 
-  const disabled = !ownerMatches || busy !== null || !form;
+  const disabled = busy !== null || !form;
+  const ownerLabel =
+    me?.account?.ownerKind === "zklogin"
+      ? "Your Google wallet (zkLogin)"
+      : me?.account?.ownerKind === "wallet"
+        ? "Your connected wallet"
+        : "This browser's wallet";
 
   return (
     <main className="page wide">
       <header className="masthead">
-        <p className="small">
-          <Link className="back" href="/chat">
-            ← Back to chat
-          </Link>{" "}
-          <SignOutButton />
-        </p>
+        <AccountBar links={[{ href: "/chat", label: "← Back to chat" }, { href: "/dashboard", label: "Dashboard" }]} />
         <p className="eyebrow">
           <span className="pill">{NETWORK}</span> Coins here have no value
         </p>
@@ -182,7 +192,7 @@ export default function SettingsPage() {
           {me?.account && (
             <div className="wallet">
               <div>
-                <p className="wallet-label">Owner</p>
+                <p className="wallet-label">{ownerLabel}</p>
                 <a
                   className="mono"
                   href={explorerAddressUrl(me.account.ownerAddress)}
@@ -198,22 +208,39 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
-          {!wallet && (
-            <p className="muted">
-              No owner wallet in this browser. Open this page in the browser where you created your account.
+          {me?.account?.ownerKind === "wallet" && (
+            <p className="muted small">Saving permissions opens your wallet to approve the change.</p>
+          )}
+          {signerProblem && (
+            <p className="muted" role="alert">
+              {signerProblem.message}{" "}
+              {signerProblem.code === "zk_expired" && (
+                <button className="link" onClick={() => void startGoogleSignIn()}>
+                  Sign in again
+                </button>
+              )}
             </p>
           )}
-          {wallet && !ownerMatches && (
-            <p className="muted">
-              This browser&apos;s wallet is not the owner of this account, so permission changes are disabled here.
-            </p>
-          )}
-          {ownerMatches && balance !== null && balance === 0n && (
+          {balance !== null && balance === 0n && (
             <p className="muted">
               Your owner wallet needs SUI for transaction fees. <a href={FAUCET_PAGE_URL} target="_blank" rel="noreferrer">Open the faucet</a>.
             </p>
           )}
         </article>
+
+        {me?.account?.vault && <VaultMoneyCard onChanged={() => void refresh().catch(() => undefined)} />}
+
+        {me?.account?.vault && (
+          <ContactsCard trusted={policy?.allowedRecipients ?? []} onChanged={() => void refresh().catch(() => undefined)} />
+        )}
+
+        {me?.account?.vault && policy && (
+          <AgentPermissionsCard
+            account={{ ...me.account, vault: me.account.vault }}
+            policy={policy}
+            onSaved={() => void refresh().catch(() => undefined)}
+          />
+        )}
 
         {form && policy && (
           <article className="card">
@@ -263,16 +290,14 @@ export default function SettingsPage() {
                 disabled={disabled}
               />
             </label>
-            <label className="field">
-              <span>
-                <input
-                  type="checkbox"
-                  checked={form.enforce}
-                  onChange={(event) => setForm({ ...form, enforce: event.target.checked })}
-                  disabled={disabled}
-                />{" "}
-                Only pay trusted recipients directly
-              </span>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={form.enforce}
+                onChange={(event) => setForm({ ...form, enforce: event.target.checked })}
+                disabled={disabled}
+              />
+              <span>Only pay trusted recipients directly</span>
             </label>
 
             <div className="field">

@@ -36,7 +36,7 @@ function positiveInt(value: string | undefined, fallback: number): number {
 
 export function limitsFromEnv(env: NodeJS.ProcessEnv = process.env): Limits {
   return {
-    account: positiveInt(env.CHAT_DAILY_LIMIT, 50),
+    account: positiveInt(env.CHAT_DAILY_LIMIT, 150),
     global: positiveInt(env.CHAT_GLOBAL_DAILY_LIMIT, 1000),
   };
 }

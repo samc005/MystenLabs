@@ -65,8 +65,8 @@ test('concurrent requests cannot overshoot the limit', async (t) => {
 
 test('limits come from the environment, falling back on anything invalid', async (t) => {
   const usage = await fresh(t);
-  assert.deepEqual(usage.limitsFromEnv({}), { account: 50, global: 1000 });
+  assert.deepEqual(usage.limitsFromEnv({}), { account: 150, global: 1000 });
   assert.deepEqual(usage.limitsFromEnv({ CHAT_DAILY_LIMIT: '7', CHAT_GLOBAL_DAILY_LIMIT: '20' }), { account: 7, global: 20 });
-  assert.deepEqual(usage.limitsFromEnv({ CHAT_DAILY_LIMIT: '0', CHAT_GLOBAL_DAILY_LIMIT: 'lots' }), { account: 50, global: 1000 });
-  assert.deepEqual(usage.limitsFromEnv({ CHAT_DAILY_LIMIT: '-3' }), { account: 50, global: 1000 });
+  assert.deepEqual(usage.limitsFromEnv({ CHAT_DAILY_LIMIT: '0', CHAT_GLOBAL_DAILY_LIMIT: 'lots' }), { account: 150, global: 1000 });
+  assert.deepEqual(usage.limitsFromEnv({ CHAT_DAILY_LIMIT: '-3' }), { account: 150, global: 1000 });
 });

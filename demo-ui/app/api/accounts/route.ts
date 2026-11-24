@@ -1,5 +1,6 @@
 import { createPendingAccount, getAccountByOwner, requireOwnerAddress } from "@/lib/server/accounts";
 import { rejectNonLocal } from "@/lib/server/local-only";
+import { assertOwnerControl, isOwnerKind, OwnerProofError } from "@/lib/server/owner-proof";
 import { userFromRequest } from "@/lib/server/session";
 import { provisionAgentAddress } from "@/lib/server/signer-provision";
 
@@ -44,14 +45,22 @@ export async function POST(request: Request) {
   const user = userFromRequest(request);
   if (!user) return signInFirst();
   try {
-    const body = (await request.json().catch(() => ({}))) as { ownerAddress?: unknown };
+    const body = (await request.json().catch(() => ({}))) as {
+      ownerAddress?: unknown;
+      ownerKind?: unknown;
+      proof?: { token?: unknown; signature?: unknown };
+    };
     const packageId = vaultPackageId();
-    const account = await createPendingAccount(
-      { ownerAddress: requireOwnerAddress(body.ownerAddress), userId: user.sub },
-      provisionAgentAddress,
-    );
+    const ownerAddress = requireOwnerAddress(body.ownerAddress);
+    const ownerKind = isOwnerKind(body.ownerKind) ? body.ownerKind : "browser";
+    const existing = await getAccountByOwner(ownerAddress);
+    // Resuming your own account needs no new proof; claiming an address for the first time does.
+    if (!existing || existing.userId !== user.sub) {
+      await assertOwnerControl(user, { ownerAddress, ownerKind, proof: body.proof });
+    }
+    const account = await createPendingAccount({ ownerAddress, userId: user.sub, ownerKind }, provisionAgentAddress);
     return Response.json({ account, packageId });
   } catch (error) {
-    return failure(error, 502);
+    return failure(error, error instanceof OwnerProofError ? 403 : 502);
   }
 }

@@ -466,3 +466,146 @@ input:focus {
   font-weight: 600;
   margin-top: 6px;
 }
+
+.error-text {
+  margin: 4px 0 0;
+  color: var(--error);
+  font-size: 13px;
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.choice h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.choice p {
+  margin: 0;
+  flex: 1;
+}
+
+.account-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.account-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.account-hello {
+  font-weight: 600;
+}
+.account-who .small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contact-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+}
+.contact-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.contact-list li:first-child {
+  border-top: 0;
+}
+.status-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--accent-soft);
+}
+.status-pill.approved {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.owner-action {
+  margin: 4px 0;
+}
+
+.request-card .request-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+.request-qr {
+  display: block;
+  margin: 10px 0;
+  padding: 8px;
+  border-radius: 10px;
+  background: #fff;
+}
+.status-pill.cancelled {
+  color: var(--muted);
+}
+.account-link {
+  display: inline-flex;
+  gap: 8px;
+}
+
+/* Indented limits under a "What Cipher can do" switch. */
+.permission-group {
+  margin: 0 0 16px 22px;
+  padding-left: 14px;
+  border-left: 2px solid var(--border, rgba(127, 127, 127, 0.25));
+}
+
+/* Checkboxes sit inline with their label, not stretched like text inputs. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+.toggle input {
+  width: 16px;
+  height: 16px;
+}
+.holdings-line {
+  margin: 0 0 14px;
+}

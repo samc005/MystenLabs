@@ -1,4 +1,5 @@
 import { recordProposalExecution } from "./proposals";
+import { saveNote } from "./account-store";
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, writeFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -8,12 +9,12 @@ import type { AccountContext } from './account-context';
 
 // Each prepared transaction belongs to the account that asked for it. Another account cannot
 // execute it even if it somehow learned the ID.
-const prepared = new Map<string, { accountId: string; command: string; bytes: string; summary: string; expires: number }>();
-export function rememberPrepared(accountId: string, command: string, bytes: string, summary = ""): string {
+const prepared = new Map<string, { accountId: string; command: string; bytes: string; summary: string; expires: number; note?: string }>();
+export function rememberPrepared(accountId: string, command: string, bytes: string, summary = "", note?: string): string {
   for (const [id, value] of prepared) if (value.expires <= Date.now()) prepared.delete(id);
   if (prepared.size >= 100) throw new Error('Too many pending transactions. Wait for them to expire.');
   const id = randomUUID();
-  prepared.set(id, { accountId, command, bytes, summary, expires: Date.now() + 120_000 });
+  prepared.set(id, { accountId, command, bytes, summary, expires: Date.now() + 120_000, ...(note ? { note } : {}) });
   return id;
 }
 export async function executePrepared(account: AccountContext, id: string, approvalId: string) {
@@ -42,6 +43,10 @@ export async function executePrepared(account: AccountContext, id: string, appro
     await rename(temp, path.join(approvals, id + '.json'));
     const result = await mcp.callTool({ name: 'execute_approved_transaction', arguments: input });
     const confirmation = result.structuredContent as { digest?: unknown; confirmed?: unknown } | undefined;
+    // The note is part of the command the user approved with their passkey, so it is theirs to keep.
+    if (!result.isError && confirmation?.confirmed === true && typeof confirmation.digest === "string" && transaction.note) {
+      await saveNote(account.accountId, confirmation.digest, transaction.note).catch(() => undefined);
+    }
     const proposal = transaction.command.match(/^execute (swap|payment) (prop_[0-9a-f]{10})$/);
     if (!result.isError && confirmation?.confirmed === true && typeof confirmation.digest === "string" && proposal) {
       try {

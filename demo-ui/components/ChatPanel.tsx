@@ -7,18 +7,26 @@ import type { ChatEvent } from "@/lib/server/agent";
 import { approveProposal, getPasskeyStatus, hashProposal, registerPasskey } from "@/lib/passkey";
 import { isSpendProposal } from "@/lib/proposals";
 import { ProposalCard } from "./ProposalCard";
+import { RichText } from "./RichText";
+import { OwnerActionCard } from "./OwnerActionCard";
+import { PaymentRequestCard } from "./PaymentRequestCard";
+import type { PaymentRequestView } from "@/lib/payment-request";
+import type { OwnerAction } from "@/lib/owner-actions";
+import { TOOL_WORKING } from "@/lib/display";
 
 type Item =
   | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string }
+  | { kind: "assistant"; text: string; disclaimer?: string | null }
   | { kind: "tool"; id: string; name: string; input: unknown; output?: string; isError?: boolean }
+  | { kind: "owner_action"; action: OwnerAction }
+  | { kind: "payment_request"; request: PaymentRequestView }
   | { kind: "error"; text: string };
 
 const SUGGESTIONS = [
-  "What's my balance?",
-  "vault status",
-  "balance",
-  "validators",
+  "How much do I have?",
+  "What are my spending limits?",
+  "How much tUSDC would I get for 0.1 SUI?",
+  "What is staking?",
 ];
 
 const PROPOSAL_ID = /Proposal ID: (prop_[0-9a-f]{10})/;
@@ -26,9 +34,21 @@ const PROPOSAL_ID = /Proposal ID: (prop_[0-9a-f]{10})/;
 interface Props {
   /** Called after every tool result, so the wallet panel can refresh. */
   onToolResult: () => void;
+  /** Friendly names for addresses (your wallet, vault, Cipher, contacts), keyed lowercase. */
+  labels: Record<string, string>;
 }
 
-export function ChatPanel({ onToolResult }: Props) {
+/** The text parts of an MCP tool result. */
+function resultText(result: unknown): string {
+  const content = (result as { content?: unknown })?.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (block && typeof block === "object" && "text" in block ? String((block as { text: unknown }).text) : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function ChatPanel({ onToolResult, labels }: Props) {
   const [items, setItems] = useState<Item[]>([]);
   const [history, setHistory] = useState<Anthropic.Beta.BetaMessageParam[]>([]);
   const [input, setInput] = useState("");
@@ -95,6 +115,15 @@ export function ChatPanel({ onToolResult }: Props) {
           case "text":
             appendText(event.delta);
             break;
+          case "payment_request":
+            setItems((previous) => [...previous, { kind: "payment_request", request: event.request }]);
+            break;
+          case "owner_action":
+            setItems((previous) => [...previous, { kind: "owner_action", action: event.action }]);
+            break;
+          case "reply":
+            setItems((previous) => [...previous, { kind: "assistant", text: event.text, disclaimer: event.disclaimer }]);
+            break;
           case "tool_call":
             setItems((previous) => [...previous, { kind: "tool", id: event.id, name: event.name, input: event.input }]);
             break;
@@ -135,11 +164,12 @@ export function ChatPanel({ onToolResult }: Props) {
         body: JSON.stringify({ id: prepared.id, approvalId }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? JSON.stringify(result.content));
-      appendText(JSON.stringify(result.content));
+      if (!response.ok) throw new Error(result.error ?? (resultText(result) || "Execution failed."));
+      const receipt = (resultText(result) || "Done.").replace(/^Confirmed proposal [0-9a-f-]{36}\./m, "Sent and confirmed on chain.");
+      setItems((previous) => [...previous, { kind: "assistant", text: receipt }]);
       onToolResult();
     } catch (error) {
-      setItems(previous => [...previous, { kind: "error", text: String(error) }]);
+      setItems((previous) => [...previous, { kind: "error", text: error instanceof Error ? error.message : String(error) }]);
     } finally { setPrepared(null); setBusy(false); }
   }
 
@@ -160,16 +190,13 @@ export function ChatPanel({ onToolResult }: Props) {
         </button>
       </div>
 
-      {prepared && <div className="card">
-        <p>Confirm testnet transaction: {prepared.command}</p>
-        <pre>{prepared.summary}</pre>
-        <button onClick={execute} disabled={busy}>Approve with passkey and execute</button>
-        <button onClick={() => setPrepared(null)} disabled={busy}>Cancel</button>
-      </div>}
       <div className="chat-log" ref={scrollRef}>
         {items.length === 0 && (
           <div className="chat-empty">
-            <p className="muted">Ask for one wallet action. Confirm the exact transaction before spending.</p>
+            <p className="muted">
+              Ask in your own words: check balances, send, swap or stake, or ask a money question. You confirm every
+              transaction before anything is sent.
+            </p>
             <div className="suggestions">
               {SUGGESTIONS.map((s) => (
                 <button key={s} className="secondary small-btn" onClick={() => send(s)} disabled={busy}>
@@ -182,21 +209,27 @@ export function ChatPanel({ onToolResult }: Props) {
 
         {items.map((item, i) => {
           if (item.kind === "user") return <div key={i} className="bubble user">{item.text}</div>;
-          if (item.kind === "assistant") return <div key={i} className="bubble assistant">{item.text}</div>;
+          if (item.kind === "assistant") {
+            return (
+              <div key={i} className="bubble assistant">
+                <RichText text={item.text} labels={labels} />
+                {item.disclaimer && <p className="disclaimer">{item.disclaimer}</p>}
+              </div>
+            );
+          }
+          if (item.kind === "payment_request") return <PaymentRequestCard key={i} request={item.request} />;
+          if (item.kind === "owner_action") return <OwnerActionCard key={i} action={item.action} onDone={onToolResult} />;
           if (item.kind === "error") return <div key={i} className="bubble error">{item.text}</div>;
           const pending = item.output === undefined;
           const proposalId = (item.name === "propose_trade" || item.name === "propose_spend") && !item.isError ? item.output?.match(PROPOSAL_ID)?.[1] : undefined;
           return (
             <Fragment key={item.id}>
-              <div className={item.isError ? "tool-card error" : "tool-card"}>
-                <div className="tool-card-head">
-                  <span className="tool-badge">MCP tool</span>
-                  <code className="tool">{item.name}</code>
-                  {pending && <span className="dot" aria-label="Running" />}
+              {/* The reply that follows says what happened; only show progress while it runs. */}
+              {pending && (
+                <div className="bubble assistant thinking">
+                  <span className="dot" /> {TOOL_WORKING[item.name] ?? "Working on it…"}
                 </div>
-                <pre className="args">{JSON.stringify(item.input)}</pre>
-                {!pending && <pre className="output">{item.output}</pre>}
-              </div>
+              )}
               {proposalId && (
                 <ProposalCard
                   id={proposalId}
@@ -215,6 +248,26 @@ export function ChatPanel({ onToolResult }: Props) {
         )}
       </div>
 
+      {prepared && (
+        <div className="confirm-card">
+          <div>
+            <strong>Confirm this testnet transaction</strong>
+            <RichText text={prepared.command} labels={labels} />
+          </div>
+          <details>
+            <summary>Details and simulation</summary>
+            <RichText text={prepared.summary} labels={labels} />
+          </details>
+          <div className="actions">
+            <button onClick={execute} disabled={busy}>
+              Approve with passkey and send
+            </button>
+            <button className="ghost" onClick={() => setPrepared(null)} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       <form
         className="chat-input"
         onSubmit={(e) => {
@@ -225,7 +278,7 @@ export function ChatPanel({ onToolResult }: Props) {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="e.g. Swap 0.05 SUI to tUSDC"
+          placeholder="e.g. send 0.05 sui to Friend, or what's my balance?"
           disabled={busy}
           aria-label="Message Cipher"
         />

@@ -125,6 +125,27 @@ export function buildSetupTx(input: {
   return tx;
 }
 
+/**
+ * For a vault the owner already has: authorize this account's agent and give it gas. The vault's
+ * existing limits, allowlist and balance are left exactly as the owner set them.
+ */
+export function buildLinkAgentTx(input: {
+  packageId: string;
+  vaultId: string;
+  ownerCapId: string;
+  agentAddress: string;
+  agentGasMist: bigint;
+}): Transaction {
+  if (input.agentGasMist <= 0n || input.agentGasMist > U64_MAX) throw new Error("Agent gas must be a positive amount.");
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${input.packageId}::${MODULE}::issue_agent_cap`,
+    arguments: [tx.object(input.ownerCapId), tx.object(input.vaultId), tx.pure.address(input.agentAddress)],
+  });
+  tx.transferObjects([coinWithBalance({ balance: input.agentGasMist })(tx)], input.agentAddress);
+  return tx;
+}
+
 // ---- Owner edits after setup. Only the sections the owner changed are sent. ----
 
 export interface PolicyChanges {
@@ -224,7 +245,19 @@ export interface VaultPolicy {
   spend: { dailyCapMist: bigint; enforceRecipients: boolean } | null;
   calendar: { dayCapMist: bigint; weekCapMist: bigint } | null;
   allowedRecipients: string[];
+  /** What the agent may do at all. null on older vaults that never set it (payments only). */
+  agent?: { payments: boolean; staking: boolean; trading: boolean } | null;
+  stake?: { maxStakedMist: bigint; minReserveMist: bigint; maxPositions: bigint; stakedMist: bigint; positions: bigint } | null;
+  allowedValidators?: string[];
+  /** The standing SUI -> tUSDC swap rule, if set. Rate is micro-tUSDC per MIST as num/den. */
+  swapRule?: { maxPerTradeMist: bigint; maxPerEpochMist: bigint; rateNum: bigint; rateDen: bigint; expiryMs: number } | null;
+  /** SUI the owner set aside in the vault's trading balance. */
+  tradingSuiMist?: bigint;
+  /** The vault's main SUI balance (what payments and staking use). */
+  balanceMist?: bigint;
 }
+
+const SUI_TYPE = /^0x0*2::sui::SUI$/;
 
 interface DynamicFieldEntry {
   fieldId: string;
@@ -252,8 +285,13 @@ export async function readVaultPolicy(reader: PolicyReader, vaultId: string): Pr
   if (!vault || vault instanceof Error || !vault.json) throw new Error("Could not read the vault on-chain.");
 
   const allowedRecipients: string[] = [];
+  const allowedValidators: string[] = [];
   let spendFieldId: string | undefined;
   let calendarFieldId: string | undefined;
+  let agentFieldId: string | undefined;
+  let stakeFieldId: string | undefined;
+  let swapRuleFieldId: string | undefined;
+  let tradingSuiFieldId: string | undefined;
   let cursor: string | null = null;
   do {
     const page = await reader.listDynamicFields({ parentId: vaultId, cursor, include: { value: true } });
@@ -264,6 +302,20 @@ export async function readVaultPolicy(reader: PolicyReader, vaultId: string): Pr
         spendFieldId = entry.fieldId;
       } else if (entry.name.type.includes("::spending_vault::CalendarPolicyKey")) {
         calendarFieldId = entry.fieldId;
+      } else if (entry.name.type.includes("::spending_vault::AgentSecurityPolicyKey")) {
+        agentFieldId = entry.fieldId;
+      } else if (entry.name.type.includes("::spending_vault::StakePolicyKey")) {
+        stakeFieldId = entry.fieldId;
+      } else if (entry.name.type.includes("::spending_vault::AllowedValidator")) {
+        allowedValidators.push(normalizeSuiAddress(`0x${toHex(entry.name.bcs)}`));
+      } else {
+        const generic = entry.name.type.match(/::spending_vault::(TradeRuleKey|TradingKey)<(.+)>$/);
+        const params = generic?.[2].split(",").map((part) => part.trim()) ?? [];
+        if (generic?.[1] === "TradeRuleKey" && SUI_TYPE.test(params[0] ?? "") && /::test_usdc::TEST_USDC$/.test(params[1] ?? "")) {
+          swapRuleFieldId = entry.fieldId;
+        } else if (generic?.[1] === "TradingKey" && params.length === 1 && SUI_TYPE.test(params[0]!)) {
+          tradingSuiFieldId = entry.fieldId;
+        }
       }
     }
     cursor = page.hasNextPage ? page.cursor : null;
@@ -271,20 +323,27 @@ export async function readVaultPolicy(reader: PolicyReader, vaultId: string): Pr
 
   // A dynamic field's JSON is { id, name, value }; for struct values, `value` holds the fields.
   const valueById = new Map<string, Record<string, unknown>>();
-  const fieldIds = [spendFieldId, calendarFieldId].filter((id): id is string => id !== undefined);
+  const rawById = new Map<string, unknown>();
+  const fieldIds = [spendFieldId, calendarFieldId, agentFieldId, stakeFieldId, swapRuleFieldId, tradingSuiFieldId].filter(
+    (id): id is string => id !== undefined,
+  );
   if (fieldIds.length > 0) {
     const { objects } = await reader.getObjects({ objectIds: fieldIds, include: { json: true } });
     for (const object of objects) {
       if (object instanceof Error || !object.json || !object.objectId) continue;
       const value = object.json.value;
+      rawById.set(object.objectId, value);
       if (value && typeof value === "object") valueById.set(object.objectId, value as Record<string, unknown>);
     }
   }
 
   const spendValue = spendFieldId ? valueById.get(spendFieldId) : undefined;
   const calendarValue = calendarFieldId ? valueById.get(calendarFieldId) : undefined;
+  const stakeValue = stakeFieldId ? valueById.get(stakeFieldId) : undefined;
+  const swapValue = swapRuleFieldId ? valueById.get(swapRuleFieldId) : undefined;
   return {
     perTxLimitMist: u64Field(vault.json.per_tx_limit, "per-transaction limit"),
+    balanceMist: vault.json.balance === undefined ? undefined : balanceValue(vault.json.balance),
     spend: spendValue
       ? {
           dailyCapMist: u64Field(spendValue.daily_cap, "daily cap"),
@@ -298,7 +357,41 @@ export async function readVaultPolicy(reader: PolicyReader, vaultId: string): Pr
         }
       : null,
     allowedRecipients: allowedRecipients.sort(),
+    agent: agentFieldId && valueById.get(agentFieldId)
+      ? {
+          payments: valueById.get(agentFieldId)!.payments === true,
+          staking: valueById.get(agentFieldId)!.staking === true,
+          trading: valueById.get(agentFieldId)!.trading === true,
+        }
+      : null,
+    stake: stakeValue
+      ? {
+          maxStakedMist: u64Field(stakeValue.max_staked, "stake limit"),
+          minReserveMist: u64Field(stakeValue.min_reserve, "stake reserve"),
+          maxPositions: u64Field(stakeValue.max_positions, "stake positions"),
+          stakedMist: u64Field(stakeValue.staked_total ?? 0, "staked total"),
+          positions: u64Field(stakeValue.positions ?? 0, "positions"),
+        }
+      : null,
+    allowedValidators: allowedValidators.sort(),
+    swapRule: swapValue
+      ? {
+          maxPerTradeMist: u64Field(swapValue.max_per_trade, "swap limit"),
+          maxPerEpochMist: u64Field(swapValue.max_per_epoch, "swap daily limit"),
+          rateNum: u64Field(swapValue.rate_num, "swap rate"),
+          rateDen: u64Field(swapValue.rate_den, "swap rate"),
+          expiryMs: Number(u64Field(swapValue.expiry_ms, "swap rule expiry")),
+        }
+      : null,
+    tradingSuiMist: tradingSuiFieldId ? balanceValue(rawById.get(tradingSuiFieldId)) : 0n,
   };
+}
+
+/** A Balance<T> reads as { value } or as the bare number, depending on the JSON encoder. */
+function balanceValue(raw: unknown): bigint {
+  if (raw && typeof raw === "object" && "value" in raw) return u64Field((raw as { value: unknown }).value, "trading balance");
+  if (raw === undefined || raw === null) return 0n;
+  return u64Field(raw, "trading balance");
 }
 
 // ---- Chain lookups, shared by the browser flow and the server-side verification. ----
