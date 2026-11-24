@@ -1,4 +1,5 @@
 import { accountErrorResponse, requireAccount } from "@/lib/server/account-context";
+import { contactLabels } from "@/lib/server/activity";
 import { rejectNonLocal } from "@/lib/server/local-only";
 import { listAccountWallets, walletMcpStatus } from "@/lib/server/wallet-mcp";
 
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
   try {
     const account = await requireAccount(request);
     const [wallets, status] = await Promise.all([listAccountWallets(account), walletMcpStatus()]);
-    return Response.json({ wallets, status });
+    return Response.json({ wallets, status, contacts: contactLabels() });
   } catch (error) {
     return accountErrorResponse(error) ?? Response.json({ error: "Could not load your wallets." }, { status: 500 });
   }
