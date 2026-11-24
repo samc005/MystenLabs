@@ -466,3 +466,9 @@ input:focus {
   font-weight: 600;
   margin-top: 6px;
 }
+
+.error-text {
+  margin: 4px 0 0;
+  color: var(--error);
+  font-size: 13px;
+}

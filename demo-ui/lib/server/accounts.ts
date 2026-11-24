@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
+import type { OwnerKind } from "./owner-proof";
 
 export interface AccountVault {
   packageId: string;
@@ -21,6 +22,12 @@ export interface Account {
   /** The Google subject that owns this account. Every read and write checks it. */
   userId: string;
   ownerAddress: string;
+  /**
+   * How the owner signs. zklogin: derived from the Google sign-in, works on any device. wallet: an
+   * existing wallet (e.g. Slush) connected through the browser wallet standard. browser: a key kept
+   * in one browser's storage (accounts created before zkLogin). Missing means browser.
+   */
+  ownerKind?: OwnerKind;
   agentAddress: string;
   /** pending: agent key minted, vault not yet verified on-chain. active: vault verified. */
   status: "pending" | "active";
@@ -92,7 +99,7 @@ export async function getAccountByOwner(ownerAddress: string): Promise<Account |
  * (a page reload, a retry after a failed transaction) never mints a second agent.
  */
 export async function createPendingAccount(
-  input: { ownerAddress: string; userId: string },
+  input: { ownerAddress: string; userId: string; ownerKind?: OwnerKind },
   provisionAgent: () => Promise<string>,
 ): Promise<Account> {
   const owner = requireOwnerAddress(input.ownerAddress);
@@ -112,6 +119,7 @@ export async function createPendingAccount(
       id: randomUUID(),
       userId: input.userId,
       ownerAddress: owner,
+      ownerKind: input.ownerKind ?? "browser",
       agentAddress: requireOwnerAddress(agentAddress),
       status: "pending",
       createdAt: new Date().toISOString(),

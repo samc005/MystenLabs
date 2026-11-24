@@ -125,6 +125,27 @@ export function buildSetupTx(input: {
   return tx;
 }
 
+/**
+ * For a vault the owner already has: authorize this account's agent and give it gas. The vault's
+ * existing limits, allowlist and balance are left exactly as the owner set them.
+ */
+export function buildLinkAgentTx(input: {
+  packageId: string;
+  vaultId: string;
+  ownerCapId: string;
+  agentAddress: string;
+  agentGasMist: bigint;
+}): Transaction {
+  if (input.agentGasMist <= 0n || input.agentGasMist > U64_MAX) throw new Error("Agent gas must be a positive amount.");
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${input.packageId}::${MODULE}::issue_agent_cap`,
+    arguments: [tx.object(input.ownerCapId), tx.object(input.vaultId), tx.pure.address(input.agentAddress)],
+  });
+  tx.transferObjects([coinWithBalance({ balance: input.agentGasMist })(tx)], input.agentAddress);
+  return tx;
+}
+
 // ---- Owner edits after setup. Only the sections the owner changed are sent. ----
 
 export interface PolicyChanges {
