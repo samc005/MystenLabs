@@ -8,7 +8,7 @@ import { approveProposal, getPasskeyStatus, hashProposal, registerPasskey } from
 import { isSpendProposal } from "@/lib/proposals";
 import { ProposalCard } from "./ProposalCard";
 import { RichText } from "./RichText";
-import { TOOL_LABELS } from "@/lib/display";
+import { TOOL_WORKING } from "@/lib/display";
 
 type Item =
   | { kind: "user"; text: string }
@@ -178,26 +178,6 @@ export function ChatPanel({ onToolResult, labels }: Props) {
         </button>
       </div>
 
-      {prepared && (
-        <div className="confirm-card">
-          <div>
-            <strong>Confirm this testnet transaction</strong>
-            <RichText text={prepared.command} labels={labels} />
-          </div>
-          <details>
-            <summary>Details and simulation</summary>
-            <RichText text={prepared.summary} labels={labels} />
-          </details>
-          <div className="actions">
-            <button onClick={execute} disabled={busy}>
-              Approve with passkey and send
-            </button>
-            <button className="ghost" onClick={() => setPrepared(null)} disabled={busy}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
       <div className="chat-log" ref={scrollRef}>
         {items.length === 0 && (
           <div className="chat-empty">
@@ -230,19 +210,12 @@ export function ChatPanel({ onToolResult, labels }: Props) {
           const proposalId = (item.name === "propose_trade" || item.name === "propose_spend") && !item.isError ? item.output?.match(PROPOSAL_ID)?.[1] : undefined;
           return (
             <Fragment key={item.id}>
-              <div className={item.isError ? "tool-card error" : "tool-card"}>
-                <div className="tool-card-head">
-                  <span className="tool-title">{TOOL_LABELS[item.name] ?? item.name.replaceAll("_", " ")}</span>
-                  {pending && <span className="dot" aria-label="Running" />}
+              {/* The reply that follows says what happened; only show progress while it runs. */}
+              {pending && (
+                <div className="bubble assistant thinking">
+                  <span className="dot" /> {TOOL_WORKING[item.name] ?? "Working on it…"}
                 </div>
-                {!pending && <RichText className="rich output" text={item.output ?? ""} labels={labels} />}
-                <details>
-                  <summary>Tool call</summary>
-                  <pre className="args">
-                    {item.name} {JSON.stringify(item.input)}
-                  </pre>
-                </details>
-              </div>
+              )}
               {proposalId && (
                 <ProposalCard
                   id={proposalId}
@@ -261,6 +234,26 @@ export function ChatPanel({ onToolResult, labels }: Props) {
         )}
       </div>
 
+      {prepared && (
+        <div className="confirm-card">
+          <div>
+            <strong>Confirm this testnet transaction</strong>
+            <RichText text={prepared.command} labels={labels} />
+          </div>
+          <details>
+            <summary>Details and simulation</summary>
+            <RichText text={prepared.summary} labels={labels} />
+          </details>
+          <div className="actions">
+            <button onClick={execute} disabled={busy}>
+              Approve with passkey and send
+            </button>
+            <button className="ghost" onClick={() => setPrepared(null)} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       <form
         className="chat-input"
         onSubmit={(e) => {

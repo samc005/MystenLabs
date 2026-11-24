@@ -12,6 +12,22 @@ import { walletMcpDir, walletMcpEntry } from "./wallet-mcp";
 
 import { parseWalletCommand, assertToolAction } from "@/lib/wallet-policy";
 import { rememberPrepared } from "./wallet-execution";
+import { cleanToolText, leadFor, presentBalance, presentVault } from "./chat-presenter";
+
+/** What the user reads in chat for a wallet result. Falls back to the cleaned tool text. */
+async function presentResult(tool: string, output: string, isError: boolean, prepared: boolean, account: AccountContext): Promise<string> {
+  if (isError) return `That didn't go through: ${cleanToolText(output) || "the wallet refused it."}`;
+  try {
+    if (tool === "get_balance") return await presentBalance(account);
+    if (tool === "vault_status") return await presentVault(account);
+  } catch {
+    // Fall through to the tool's own text, which has the same facts.
+  }
+  const lead = leadFor(tool, prepared);
+  if (prepared) return lead!;
+  const body = cleanToolText(output);
+  return lead ? `${lead}\n${body}` : body;
+}
 
 export type ChatEvent =
   | { type: "text"; delta: string }
@@ -96,11 +112,7 @@ export async function runChatTurn(
       const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output);
       send({ type: "prepared", id, command, summary: output });
     }
-    // The tool card already shows the full output; the assistant line says what happens next.
-    if (result.isError) send({ type: "text", delta: "That didn't go through. The details are above." });
-    else if (typeof structured?.transactionBytes === "string") {
-      send({ type: "text", delta: "I prepared this transaction and simulated it. Nothing is sent until you approve it below." });
-    }
+    send({ type: "text", delta: await presentResult(action.tool, toolResultText(result), Boolean(result.isError), typeof structured?.transactionBytes === "string", account) });
     send({ type: "done", messages: [] });
   } finally {
     await mcp.close().catch(() => undefined);

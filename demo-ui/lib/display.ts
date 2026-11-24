@@ -81,7 +81,21 @@ export function accountLabels(input: {
   return labels;
 }
 
-/** Readable names for the wallet tools shown in chat. */
+/** What Cipher shows while a wallet tool is running. */
+export const TOOL_WORKING: Record<string, string> = {
+  get_balance: "Checking your balance…",
+  vault_status: "Checking your vault…",
+  list_validators: "Looking up validators…",
+  vault_spend: "Preparing the payment…",
+  propose_spend: "Asking for your approval…",
+  vault_stake: "Preparing the stake…",
+  swap_quote: "Getting a quote…",
+  propose_trade: "Preparing the swap…",
+  vault_swap: "Preparing the swap…",
+  vault_spend_approved: "Preparing the approved payment…",
+};
+
+/** Readable names for the wallet tools. */
 export const TOOL_LABELS: Record<string, string> = {
   get_balance: "Checked balance",
   vault_status: "Checked vault",
