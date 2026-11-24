@@ -56,13 +56,30 @@ export default function Home() {
         {me?.user && <p className="muted">Taking you to Cipher…</p>}
         {me && !me.user && (
           <>
-            <p className="muted">
-              Sign in with Google. Then create a new wallet tied to your Google account, or bring one you already use
-              (like Slush). You only need some free testnet SUI.
-            </p>
-            <div className="actions">
-              <button onClick={() => void startGoogleSignIn()}>Continue with Google</button>
+            <div className="choices">
+              <div className="choice">
+                <h2>New here?</h2>
+                <p className="muted">
+                  Create a wallet from your Google account. No seed phrase, and it works on any device.
+                </p>
+                <button onClick={() => void startGoogleSignIn("new")}>Create a new wallet</button>
+              </div>
+              <div className="choice">
+                <h2>Already have a Sui wallet?</h2>
+                <p className="muted">
+                  Bring your Slush (or other Sui) wallet. Same address, same funds, now with Cipher.
+                </p>
+                <button className="secondary" onClick={() => void startGoogleSignIn("existing")}>
+                  Use my existing wallet
+                </button>
+              </div>
             </div>
+            <p className="muted small">
+              Both start with Google sign-in, which keeps your account tied to your email. Already set up?{" "}
+              <button className="link" onClick={() => void startGoogleSignIn()}>
+                Sign in
+              </button>
+            </p>
           </>
         )}
       </article>

@@ -43,11 +43,30 @@ function storedEphemeral(): Ed25519Keypair | null {
   }
 }
 
+const SETUP_CHOICE = "cipher-setup-choice";
+
+/** What the user picked on the home page, so setup opens on that option after Google sign-in. */
+export function takeSetupChoice(): "new" | "existing" | null {
+  try {
+    const value = window.sessionStorage.getItem(SETUP_CHOICE);
+    window.sessionStorage.removeItem(SETUP_CHOICE);
+    return value === "new" || value === "existing" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Starts Google sign-in and opens a zkLogin wallet session for this tab. The ephemeral private key
  * stays in sessionStorage; only its public key is sent. Falls back to plain sign-in on any error.
+ * `choice` remembers which setup option to open afterwards (new accounts only).
  */
-export async function startGoogleSignIn(): Promise<void> {
+export async function startGoogleSignIn(choice?: "new" | "existing"): Promise<void> {
+  try {
+    if (choice) window.sessionStorage.setItem(SETUP_CHOICE, choice);
+  } catch {
+    // Only a convenience.
+  }
   try {
     const ephemeral = new Ed25519Keypair();
     window.sessionStorage.setItem(EPHEMERAL_KEY, ephemeral.getSecretKey());

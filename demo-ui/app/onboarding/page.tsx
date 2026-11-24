@@ -25,6 +25,7 @@ import {
   signMessageWithBrowserKey,
   signMessageWithWallet,
   startGoogleSignIn,
+  takeSetupChoice,
   type OwnerKind,
 } from "@/lib/owner-signer";
 
@@ -97,6 +98,8 @@ export default function Onboarding() {
         setSession({ user: null, zkLoginAvailable: false });
       }
     })();
+    // The option picked on the home page before Google sign-in.
+    if (takeSetupChoice() === "existing") setMode("existing");
     const params = new URLSearchParams(window.location.search);
     if (params.get("auth") === "failed") setNotice("Google sign-in did not complete. Try again.");
     if (params.get("zk") === "failed") {
@@ -126,8 +129,8 @@ export default function Onboarding() {
       } else setMode("existing");
       return;
     }
-    if (session.user.zkAddress) setChoice({ kind: "zklogin", address: session.user.zkAddress });
-  }, [session, existing, choice]);
+    if (mode === "new" && session.user.zkAddress) setChoice({ kind: "zklogin", address: session.user.zkAddress });
+  }, [session, existing, choice, mode]);
 
   const refresh = useCallback(async () => {
     if (!choice) return;
