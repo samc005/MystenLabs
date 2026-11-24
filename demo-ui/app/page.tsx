@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { startGoogleSignIn } from "@/lib/owner-signer";
 
 interface Me {
   user: { email: string } | null;
@@ -23,7 +24,10 @@ export default function Home() {
       .then((response) => response.json() as Promise<Me>)
       .then((body) => {
         setMe(body);
-        if (body.user) window.location.replace(body.account?.status === "active" ? "/chat" : "/onboarding");
+        if (body.user) {
+          const zkFailed = params.get("zk") === "failed" ? "?zk=failed" : "";
+          window.location.replace(body.account?.status === "active" ? `/chat${zkFailed}` : `/onboarding${zkFailed}`);
+        }
       })
       .catch(() => setMe({ user: null, account: null }));
   }, []);
@@ -53,11 +57,11 @@ export default function Home() {
         {me && !me.user && (
           <>
             <p className="muted">
-              Sign in with Google. We create your wallet and vault after that. You only need to add some free testnet
-              SUI.
+              Sign in with Google. Then create a new wallet tied to your Google account, or bring one you already use
+              (like Slush). You only need some free testnet SUI.
             </p>
             <div className="actions">
-              <button onClick={() => window.location.assign("/api/auth/google/start")}>Continue with Google</button>
+              <button onClick={() => void startGoogleSignIn()}>Continue with Google</button>
             </div>
           </>
         )}
