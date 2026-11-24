@@ -17,7 +17,7 @@ export const DISCLAIMER =
 const intentProperties = {
   action: {
     type: 'string',
-    enum: ['balance', 'vault status', 'validators', 'send', 'payment proposal', 'stake', 'quote', 'swap', 'save contact', 'deposit', 'withdraw', 'payment request', 'payment plan'],
+    enum: ['balance', 'vault status', 'validators', 'send', 'payment proposal', 'stake', 'quote', 'swap', 'save contact', 'deposit', 'withdraw', 'payment request', 'payment plan', 'spending'],
   },
   amount: { type: 'string', description: 'Decimal digits only, e.g. "0.05". Use only a number the user wrote.' },
   recipient: { type: 'string', description: 'A full 0x address the user wrote, or a contact name exactly as listed.' },
@@ -26,6 +26,7 @@ const intentProperties = {
   buy: { type: 'string', enum: ['SUI', 'tUSDC'] },
   address: { type: 'string', description: 'save contact: the full 0x address the user wrote.' },
   name: { type: 'string', description: 'save contact: the name the user gave, as written.' },
+  period: { type: 'string', enum: ['this week', 'this month', 'all time'], description: 'spending: which period (default this week).' },
   every: { type: 'string', enum: ['day', 'week'], description: 'payment plan: how often.' },
   count: { type: 'string', description: 'payment plan: how many payments, as digits the user gave ("for 10 days" -> "10").' },
   from: { type: 'string', description: 'payment request: who should pay (a name or full address), only if they said.' },
@@ -47,6 +48,7 @@ Call wallet_intent when the user clearly wants ONE of these actions and every re
 - deposit: move SUI from their wallet into their vault, "add 0.5 to my vault", "top up my vault with 1 sui" (amount)
 - payment request: ask someone to pay THEM, "request 0.05 sui from Sam for pizza", "make me a qr for 0.1 sui" (amount, optional from, optional note). Not the same as payment proposal.
 - payment plan: recurring payments, "pay Sam 0.1 every day for 10 days", "send Friend 0.5 weekly for 4 weeks" (amount, recipient, every, count, optional note). Only daily or weekly; if they give another schedule or no end, clarify.
+- spending: questions about their own spending, "how much did I spend this week", "who do I pay the most", "my spending this month" (optional period)
 - withdraw: move SUI from their vault back to their wallet, "take 0.2 out of my vault", "empty 0.1 from the vault" (amount)
 Include ONLY the fields for that action. Write amounts as digits ("five" -> "5", "half a sui" -> "0.5"). Recipients: a full 0x address copied exactly, or one of these saved contact names: {{CONTACTS}}. "my friend" may mean a contact named Friend. Never invent, shorten, complete or guess an address, amount, asset or validator.
 

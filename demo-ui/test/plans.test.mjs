@@ -85,3 +85,30 @@ test('the scheduler leaves future payments alone and records failures without lo
   const [stored] = await store.read(account.accountId, 'plans');
   assert.deepEqual(stored.payments.map((p) => p.status), ['scheduled', 'scheduled']);
 });
+
+test('insights count only real spending, by period, recipient and who paid', () => {
+  const { computeInsights, describeInsights } = loadTs('lib/server/insights.ts');
+  const now = new Date('2026-11-23T12:00:00Z');
+  const at = (daysAgo) => new Date(now.getTime() - daysAgo * DAY).toISOString();
+  const entry = (o) => ({ digest: Math.random().toString(36), success: true, direction: 'out', counterparty: null, note: null, by: 'cipher', ...o });
+  const entries = [
+    entry({ kind: 'payment', amountMist: '100000000', timestamp: at(1), counterparty: { address: addr('1'), label: 'Sam' }, note: 'pizza' }),
+    entry({ kind: 'payment', amountMist: '50000000', timestamp: at(2), counterparty: { address: addr('1'), label: 'Sam' } }),
+    entry({ kind: 'sent', by: 'you', amountMist: '200000000', timestamp: at(3), counterparty: { address: addr('2'), label: null } }),
+    entry({ kind: 'deposit', by: 'you', amountMist: '500000000', timestamp: at(1) }), // moving to your own vault is not spending
+    entry({ kind: 'payment', amountMist: '900000000', timestamp: at(1), success: false, counterparty: { address: addr('1'), label: 'Sam' } }),
+    entry({ kind: 'received', by: 'someone else', direction: 'in', amountMist: '70000000', timestamp: at(2) }),
+    entry({ kind: 'payment', amountMist: '300000000', timestamp: at(20), counterparty: { address: addr('3'), label: null } }),
+  ];
+  const week = computeInsights(entries, 'this_week', now);
+  assert.equal(week.spentMist, '350000000');
+  assert.equal(week.payments, 3);
+  assert.equal(week.spentByCipherMist, '150000000');
+  assert.equal(week.spentByYouMist, '200000000');
+  assert.equal(week.receivedMist, '70000000');
+  assert.equal(week.series.length, 7);
+  assert.deepEqual(week.topRecipients.map((r) => [r.address, r.totalMist, r.count]), [[addr('2'), '200000000', 1], [addr('1'), '150000000', 2]]);
+  assert.deepEqual(week.notes.map((n) => n.note), ['pizza']);
+  assert.equal(computeInsights(entries, 'this_month', now).spentMist, '650000000');
+  assert.match(describeInsights(week, (m) => (Number(m) / 1e9).toString()), /spent 0.35 SUI in the last 7 days, across 3 payments/);
+});

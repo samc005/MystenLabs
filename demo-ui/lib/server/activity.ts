@@ -51,8 +51,9 @@ export interface RawTransaction {
   } | null;
 }
 
-const QUERY = `query Activity($address: SuiAddress!, $last: Int!) {
-  transactions(last: $last, filter: { affectedAddress: $address }) {
+const QUERY = `query Activity($address: SuiAddress!, $last: Int!, $before: String) {
+  transactions(last: $last, before: $before, filter: { affectedAddress: $address }) {
+    pageInfo { hasPreviousPage startCursor }
     nodes {
       digest
       sender { address }
@@ -72,20 +73,28 @@ const QUERY = `query Activity($address: SuiAddress!, $last: Int!) {
   }
 }`;
 
-async function fetchForAddress(address: string, fetchImpl: typeof fetch): Promise<RawTransaction[]> {
-  const response = await fetchImpl(GRAPHQL_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query: QUERY, variables: { address, last: PER_ADDRESS } }),
-    redirect: "error",
-    signal: AbortSignal.timeout(15_000),
-  });
-  const body = (await response.json()) as {
-    data?: { transactions?: { nodes?: RawTransaction[] } };
-    errors?: { message: string }[];
-  };
-  if (!response.ok || body.errors?.length) throw new Error(body.errors?.[0]?.message ?? `GraphQL ${response.status}`);
-  return body.data?.transactions?.nodes ?? [];
+async function fetchForAddress(address: string, fetchImpl: typeof fetch, pages = 1): Promise<RawTransaction[]> {
+  const found: RawTransaction[] = [];
+  let before: string | null = null;
+  for (let page = 0; page < pages; page += 1) {
+    const response = await fetchImpl(GRAPHQL_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: QUERY, variables: { address, last: pages > 1 ? 50 : PER_ADDRESS, before } }),
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = (await response.json()) as {
+      data?: { transactions?: { nodes?: RawTransaction[]; pageInfo?: { hasPreviousPage: boolean; startCursor: string | null } } };
+      errors?: { message: string }[];
+    };
+    if (!response.ok || body.errors?.length) throw new Error(body.errors?.[0]?.message ?? `GraphQL ${response.status}`);
+    found.push(...(body.data?.transactions?.nodes ?? []));
+    const info = body.data?.transactions?.pageInfo;
+    if (!info?.hasPreviousPage || !info.startCursor) break;
+    before = info.startCursor;
+  }
+  return found;
 }
 
 const PAYMENT = /^spend/;
@@ -174,12 +183,19 @@ export function describeTransaction(
 /** The account's most recent transactions, newest first, across its owner wallet and Cipher's key. */
 export async function recentActivity(
   account: { ownerAddress: string; agentAddress: string; vaultId: string },
-  options: { limit?: number; labels?: Record<string, string>; notes?: Record<string, string>; fetchImpl?: typeof fetch } = {},
+  options: {
+    limit?: number;
+    labels?: Record<string, string>;
+    notes?: Record<string, string>;
+    fetchImpl?: typeof fetch;
+    /** Pages of 50 per address to read. 1 (the default) reads the most recent 20. */
+    pages?: number;
+  } = {},
 ): Promise<ActivityEntry[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const pages = await Promise.all([
-    fetchForAddress(account.ownerAddress, fetchImpl),
-    fetchForAddress(account.agentAddress, fetchImpl),
+    fetchForAddress(account.ownerAddress, fetchImpl, options.pages ?? 1),
+    fetchForAddress(account.agentAddress, fetchImpl, options.pages ?? 1),
   ]);
   const byDigest = new Map<string, RawTransaction>();
   for (const tx of pages.flat()) byDigest.set(tx.digest, tx);

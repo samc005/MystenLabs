@@ -7,7 +7,9 @@ import { createSuiClient, formatSui, getSuiBalance } from "@/lib/sui";
 import { listAccountWallets } from "./wallet-mcp";
 import type { WalletAction } from "@/lib/wallet-policy";
 import type { AccountContext } from "./account-context";
-import { createRequest, labelsFor, saveContact } from "./account-store";
+import { createRequest, labelsFor, notesFor, saveContact } from "./account-store";
+import { recentActivity } from "./activity";
+import { computeInsights, describeInsights, type Period } from "./insights";
 import { MAX_PLAN_PAYMENTS } from "@/lib/plan";
 import type { ChatEvent } from "./agent";
 
@@ -144,6 +146,12 @@ export async function handleLocalAction(action: WalletAction, account: AccountCo
           note: action.note ?? null,
         },
       });
+      return;
+    }
+    case "spending_insights": {
+      const [labels, notes] = await Promise.all([labelsFor(account.accountId), notesFor(account.accountId)]);
+      const entries = await recentActivity(account, { labels, notes, pages: 4, limit: 400 });
+      send({ type: "text", delta: describeInsights(computeInsights(entries, args.period as Period), formatSui) });
       return;
     }
     default:

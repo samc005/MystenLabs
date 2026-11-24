@@ -135,7 +135,7 @@ export default function SettingsPage() {
   return (
     <main className="page wide">
       <header className="masthead">
-        <AccountBar link={{ href: "/chat", label: "← Back to chat" }} />
+        <AccountBar links={[{ href: "/chat", label: "← Back to chat" }, { href: "/dashboard", label: "Dashboard" }]} />
         <p className="eyebrow">
           <span className="pill">{NETWORK}</span> Coins here have no value
         </p>

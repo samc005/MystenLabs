@@ -10,7 +10,7 @@ interface Me {
 }
 
 /** Who is signed in, with links to settings (or back to chat) and sign out. */
-export function AccountBar({ link }: { link: { href: string; label: string } }) {
+export function AccountBar({ links }: { links: { href: string; label: string }[] }) {
   const [me, setMe] = useState<Me | null>(null);
 
   useEffect(() => {
@@ -43,10 +43,14 @@ export function AccountBar({ link }: { link: { href: string; label: string } }) 
         )}
       </div>
       <div className="account-links small">
-        <Link href={link.href}>{link.label}</Link>
-        <span className="muted" aria-hidden>
-          ·
-        </span>
+        {links.map((link) => (
+          <span key={link.href} className="account-link">
+            <Link href={link.href}>{link.label}</Link>
+            <span className="muted" aria-hidden>
+              ·
+            </span>
+          </span>
+        ))}
         <SignOutButton />
       </div>
     </div>

@@ -572,3 +572,7 @@ input:focus {
 .status-pill.cancelled {
   color: var(--muted);
 }
+.account-link {
+  display: inline-flex;
+  gap: 8px;
+}

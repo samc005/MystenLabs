@@ -69,7 +69,7 @@ export default function ChatDemo() {
   return (
     <main className="page wide">
       <header className="masthead">
-        <AccountBar link={{ href: "/settings", label: "Account settings" }} />
+        <AccountBar links={[{ href: "/dashboard", label: "Dashboard" }, { href: "/settings", label: "Account settings" }]} />
         <p className="eyebrow">
           <span className="pill">testnet</span> Local only · Cipher (Claude) → wallet-mcp → Sui
         </p>
