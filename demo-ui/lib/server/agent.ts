@@ -13,7 +13,7 @@ import { walletMcpDir, walletMcpEntry } from "./wallet-mcp";
 import { parseWalletCommand, assertToolAction, LOCAL_TOOLS } from "@/lib/wallet-policy";
 import type { OwnerAction } from "@/lib/owner-actions";
 import { contactsFor } from "./account-store";
-import { handleLocalAction } from "./local-actions";
+import { handleLocalAction, topUpFor } from "./local-actions";
 import { rememberPrepared } from "./wallet-execution";
 import { cleanToolText, leadFor, presentBalance, presentVault } from "./chat-presenter";
 
@@ -121,6 +121,13 @@ export async function runChatTurn(
       output += "\n" + toolResultText(simulation);
       const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output);
       send({ type: "prepared", id, command, summary: output });
+    }
+    const topUp = result.isError ? topUpFor(toolResultText(result)) : null;
+    if (topUp) {
+      send({ type: "text", delta: topUp.text });
+      send({ type: "owner_action", action: { kind: "deposit", amountMist: topUp.amountMist } });
+      send({ type: "done", messages: [] });
+      return;
     }
     send({ type: "text", delta: await presentResult(action.tool, toolResultText(result), Boolean(result.isError), typeof structured?.transactionBytes === "string", account) });
     send({ type: "done", messages: [] });

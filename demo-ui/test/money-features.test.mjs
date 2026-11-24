@@ -70,3 +70,14 @@ test('owner actions build exactly one owner-signed vault call', () => {
   assert.ok(calls({ kind: 'deposit', amountMist: '100' }).includes('deposit'));
   assert.throws(() => owner.buildOwnerActionTx({ kind: 'withdraw', amountMist: '0' }, vault), /more than zero/);
 });
+
+test('a payment that fails only because the vault is short offers the exact top-up', () => {
+  const stub = { createSuiClient: () => ({}), formatSui: (m) => (Number(m) / 1e9).toString(), getSuiBalance: async () => 0n };
+  const local = loadTs('lib/server/local-actions.ts', {
+    '@/lib/owner-tx': {}, '@/lib/sui': stub, './wallet-mcp': {}, './account-store': {},
+  });
+  const offer = local.topUpFor('Error: The vault only holds 0.09 SUI, less than the requested 0.5 SUI.');
+  assert.equal(offer.amountMist, '410000000');
+  assert.match(offer.text, /move 0.41 SUI from your wallet/);
+  assert.equal(local.topUpFor('Recipient is not on the allowlist.'), null);
+});
