@@ -17,9 +17,10 @@ export async function POST(request: Request) {
   try {
     const account = await requireAccount(request);
     const body = (await request.json().catch(() => ({}))) as { digest?: unknown; approvalId?: unknown; note?: unknown };
-    if (typeof body.digest !== "string" || typeof body.approvalId !== "string") throw new Error("Send the digest and passkey approval.");
+    if (typeof body.digest !== "string") throw new Error("Send the transaction digest.");
+    const approvalId = typeof body.approvalId === "string" ? body.approvalId : null;
     const note = typeof body.note === "string" && NOTE.test(body.note) ? body.note : null;
-    return Response.json(await sendOwnerApprovedPayment(account, body.digest, body.approvalId, note));
+    return Response.json(await sendOwnerApprovedPayment(account, body.digest, approvalId, note));
   } catch (error) {
     return accountErrorResponse(error) ?? Response.json({ error: (error as Error).message }, { status: 400 });
   }

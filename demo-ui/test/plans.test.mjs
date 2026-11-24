@@ -148,6 +148,11 @@ test('a top-up payment is sent only for one approved intent with a matching pass
   // A valid approval reaches the signer step (stubbed to fail here), after checking these exact terms.
   await assert.rejects(plans.sendOwnerApprovedPayment(account, DIGEST, 'ok', null), /SUI_SIGNER_STATE_DIR|no signer in tests/);
   assert.deepEqual(consumed, [await sha(approval.paymentApproval(addr('1'), '100000000'))]);
+  // A retry of the same approved payment needs no new passkey approval.
+  await assert.rejects(plans.sendOwnerApprovedPayment(account, DIGEST, null, null), /SUI_SIGNER_STATE_DIR|no signer in tests/);
+  assert.equal(consumed.length, 1);
+  // ...but another account cannot ride on it.
+  await assert.rejects(plans.sendOwnerApprovedPayment({ ...account, accountId: '66666666-6666-4666-8666-666666666666' }, DIGEST, null, null), /Passkey approval/);
 
   const two = await setup(t, [pay, created({ json: { ...pay.json, intent_id: addr('6') } })]);
   await assert.rejects(two.plans.sendOwnerApprovedPayment(two.account, DIGEST, 'ok', null), /exactly one payment/);

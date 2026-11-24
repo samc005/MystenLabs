@@ -7,7 +7,7 @@
 // the contract enforces each one's recipient, amount, single use and deadline. The scheduler's
 // only freedom is timing inside each payment's window.
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Transaction } from "@mysten/sui/transactions";
@@ -122,6 +122,9 @@ export async function recordCancellation(account: AccountContext, planId: string
   });
 }
 
+/** Owner transactions whose payment already passed the passkey check, until their approval expires. */
+const passkeyCleared = new Map<string, number>();
+
 /**
  * Sends a one-off payment the owner approved in a single step: their transaction topped up the
  * vault and created exactly one SpendIntent, and their passkey approved that recipient and
@@ -131,7 +134,7 @@ export async function recordCancellation(account: AccountContext, planId: string
 export async function sendOwnerApprovedPayment(
   account: AccountContext,
   digest: string,
-  approvalId: string,
+  approvalId: string | null,
   note: string | null,
 ): Promise<{ digest: string; recipient: string; amountMist: string }> {
   if ((await passkeyStatus()).revoked) throw new Error("Wallet access is locked.");
@@ -141,8 +144,17 @@ export async function sendOwnerApprovedPayment(
   const intentId = normalizeSuiAddress(String(event.intent_id));
   const recipient = normalizeSuiAddress(String(event.recipient));
   const amountMist = String(event.amount);
-  if (Number(event.expiry_ms) <= Date.now()) throw new Error("That payment approval has expired. Nothing was sent.");
-  await consumeApproval(approvalId, approvalHash(paymentApproval(recipient, amountMist)));
+  const expiry = Number(event.expiry_ms);
+  if (expiry <= Date.now()) throw new Error("That payment approval has expired. Nothing was sent.");
+  // The passkey is checked once per approved payment. A retry of the same owner transaction
+  // (say the signer was briefly down) needs no new prompt: the on-chain approval it runs is
+  // single use, fixed to this recipient and amount, so retrying can never pay twice.
+  const key = `${account.accountId}:${digest}`;
+  for (const [entry, until] of passkeyCleared) if (until <= Date.now()) passkeyCleared.delete(entry);
+  if (!passkeyCleared.has(key)) {
+    await consumeApproval(approvalId ?? "", approvalHash(paymentApproval(recipient, amountMist)));
+    passkeyCleared.set(key, expiry);
+  }
   const paid = await submitPlanPayment(account, intentId);
   if (note) await saveNote(account.accountId, paid, note).catch(() => undefined);
   return { digest: paid, recipient, amountMist };
@@ -164,6 +176,19 @@ async function submitPlanPayment(account: AccountContext, intentId: string): Pro
   const client = createSuiClient();
   const tx = new Transaction();
   tx.setSender(account.agentAddress);
+  // The signer only signs transactions pinned to this chain and the current epoch window.
+  const [{ chainIdentifier }, { systemState }] = await Promise.all([client.getChainIdentifier(), client.core.getCurrentSystemState()]);
+  const epoch = BigInt(systemState.epoch);
+  tx.setExpiration({
+    ValidDuring: {
+      chain: chainIdentifier,
+      minEpoch: epoch.toString(),
+      maxEpoch: (epoch + 1n).toString(),
+      minTimestamp: null,
+      maxTimestamp: null,
+      nonce: randomBytes(4).readUInt32LE(),
+    },
+  });
   tx.moveCall({
     target: `${account.packageId}::spending_vault::spend_approved`,
     arguments: [tx.object(account.agentCapId), tx.object(account.vaultId), tx.pure.id(intentId), tx.object.clock()],
@@ -182,7 +207,10 @@ async function submitPlanPayment(account: AccountContext, intentId: string): Pro
     await rename(temp, path.join(approvals, `${id}.json`));
     const result = await mcp.callTool({ name: "execute_approved_transaction", arguments: input });
     const confirmation = result.structuredContent as { digest?: unknown; confirmed?: unknown } | undefined;
-    if (result.isError || typeof confirmation?.digest !== "string") throw new Error("The signer did not confirm the payment.");
+    if (result.isError || typeof confirmation?.digest !== "string") {
+      const detail = (result.content as { type: string; text?: string }[] | undefined)?.find((part) => part.type === "text")?.text;
+      throw new Error(`The signer did not confirm the payment${detail ? ` (${detail.split("\n")[0].slice(0, 200)})` : ""}.`);
+    }
     return confirmation.digest;
   } finally {
     await mcp.close().catch(() => undefined);

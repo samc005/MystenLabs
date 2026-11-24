@@ -29,8 +29,8 @@ async function afterSigned(action: OwnerAction, digest: string, approvalId: stri
       return typeof result.digest === "string" ? result.digest : null;
     } catch (reason) {
       throw new Error(
-        `Your vault was topped up, but the payment didn't go out: ${reason instanceof Error ? reason.message : String(reason)} ` +
-          "Nothing was sent. Ask me to send it again.",
+        `The payment didn't go out: ${reason instanceof Error ? reason.message : String(reason)} Nothing was sent. ` +
+          "You can try again for the next 10 minutes without approving again.",
       );
     }
   }
@@ -109,10 +109,28 @@ export function describeOwnerAction(action: OwnerAction): { title: string; detai
 
 /** Lets the owner's own wallet sign an action Cipher prepared. The server never sees a key. */
 export function OwnerActionCard({ action, onDone }: { action: OwnerAction; onDone: () => void }) {
-  const [state, setState] = useState<"idle" | "passkey" | "signing" | "done" | "cancelled">("idle");
+  const [state, setState] = useState<"idle" | "passkey" | "signing" | "sending" | "retry" | "done" | "cancelled">("idle");
   const [digest, setDigest] = useState<string | null>(null);
+  /** For a top-up payment: the owner transaction that topped up the vault and approved the payment. */
+  const [approvedTx, setApprovedTx] = useState<string | null>(null);
   const [error, setError] = useState<{ message: string; signIn: boolean } | null>(null);
   const text = describeOwnerAction(action);
+  const message = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
+
+  /** Sends an approved top-up payment. A retry reuses the same on-chain approval: no new prompt. */
+  async function sendApproved(ownerDigest: string, approvalId: string | null) {
+    setState("sending");
+    try {
+      const paid = await afterSigned(action, ownerDigest, approvalId ?? "");
+      setDigest(paid);
+      setError(null);
+      setState("done");
+    } catch (reason) {
+      setError({ message: message(reason), signIn: false });
+      setState("retry");
+    }
+    onDone();
+  }
 
   async function sign() {
     setState("signing");
@@ -127,22 +145,23 @@ export function OwnerActionCard({ action, onDone }: { action: OwnerAction; onDon
       const signer = await ownerSigner(me.account);
       const tx = buildOwnerActionTx(action, me.account.vault);
       const signed = await execute(createSuiClient(), signer, tx);
+      if (action.kind === "pay") {
+        setApprovedTx(signed);
+        await sendApproved(signed, approvalId);
+        return;
+      }
       setDigest(signed);
       try {
-        const paid = await afterSigned(action, signed, approvalId);
-        if (paid) setDigest(paid);
+        await afterSigned(action, signed, approvalId);
       } catch (reason) {
         // Already on-chain: never offer to sign again, which could duplicate it.
-        setError({ message: reason instanceof Error ? reason.message : String(reason), signIn: false });
+        setError({ message: message(reason), signIn: false });
       }
       setState("done");
       onDone();
     } catch (reason) {
       setState("idle");
-      setError({
-        message: reason instanceof Error ? reason.message : String(reason),
-        signIn: reason instanceof OwnerSignerError && reason.code === "zk_expired",
-      });
+      setError({ message: message(reason), signIn: reason instanceof OwnerSignerError && reason.code === "zk_expired" });
     }
   }
 
@@ -158,6 +177,14 @@ export function OwnerActionCard({ action, onDone }: { action: OwnerAction; onDon
           </a>
         </p>
       )}
+      {(state === "retry" || state === "sending") && approvedTx && (
+        <p className="small muted">
+          Your vault was topped up.{" "}
+          <a className="receipt-link" href={explorerTxUrl(approvedTx)} target="_blank" rel="noreferrer">
+            Top-up receipt ↗
+          </a>
+        </p>
+      )}
       {state === "cancelled" && <p className="muted small">Cancelled. Nothing changed.</p>}
       {error && (
         <p className="error-text" role="alert">
@@ -168,6 +195,13 @@ export function OwnerActionCard({ action, onDone }: { action: OwnerAction; onDon
             </button>
           )}
         </p>
+      )}
+      {(state === "retry" || state === "sending") && approvedTx && (
+        <div className="actions">
+          <button onClick={() => void sendApproved(approvedTx, null)} disabled={state === "sending"}>
+            {state === "sending" ? "Sending…" : "Try sending again"}
+          </button>
+        </div>
       )}
       {(state === "idle" || state === "passkey" || state === "signing") && (
         <div className="actions">
