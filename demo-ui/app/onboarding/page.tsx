@@ -302,6 +302,8 @@ export default function Onboarding() {
                   onClick={() => {
                     setMode("new");
                     setChoice(user.zkAddress ? { kind: "zklogin", address: user.zkAddress } : null);
+                    // The Google sign-in is what creates the wallet. Without a wallet on this session, do it now.
+                    if (!user.zkAddress && session?.zkLoginAvailable) void startGoogleSignIn();
                   }}
                 >
                   Create a new wallet
@@ -311,6 +313,8 @@ export default function Onboarding() {
                   onClick={() => {
                     setMode("existing");
                     setChoice(null);
+                    // One wallet installed: open its connect popup straight away.
+                    if (wallets.length === 1) void pickWallet(wallets[0]);
                   }}
                 >
                   Use an existing wallet
@@ -324,17 +328,19 @@ export default function Onboarding() {
                   A wallet created from your Google sign-in (zkLogin). There is no seed phrase to lose: sign in with
                   Google on any device and it is yours.
                 </p>
-                {!user.zkAddress && (
-                  <p className="muted">
-                    {session?.zkLoginAvailable
-                      ? "Your wallet session expired. Sign in again to open it."
-                      : "zkLogin is not configured on this server (set ENOKI_API_KEY)."}{" "}
-                    {session?.zkLoginAvailable && (
-                      <button className="link" onClick={() => void startGoogleSignIn()}>
-                        Sign in again
-                      </button>
-                    )}
-                  </p>
+                {!user.zkAddress && session?.zkLoginAvailable && (
+                  <div className="actions">
+                    <button onClick={() => void startGoogleSignIn()}>Continue with Google to create your wallet</button>
+                  </div>
+                )}
+                {!user.zkAddress && !session?.zkLoginAvailable && (
+                  <div className="notice" role="alert">
+                    <span>
+                      New Google wallets are not set up on this server yet. Add <code>ENOKI_API_KEY</code> to{" "}
+                      <code>demo-ui/.env.local</code> (see <code>.env.example</code>), restart, and sign in again. Until
+                      then, use an existing wallet.
+                    </span>
+                  </div>
                 )}
               </>
             )}
@@ -346,13 +352,15 @@ export default function Onboarding() {
                   up for owner actions like changing limits; everyday spending happens here through Cipher.
                 </p>
                 {wallets.length === 0 && (
-                  <p className="muted small">
-                    No Sui wallet found in this browser. Install{" "}
-                    <a href="https://slush.app" target="_blank" rel="noreferrer">
-                      Slush
-                    </a>{" "}
-                    (or another Sui wallet), then reload this page.
-                  </p>
+                  <div className="notice" role="alert">
+                    <span>
+                      No Sui wallet found in this browser. Install the{" "}
+                      <a href="https://slush.app" target="_blank" rel="noreferrer">
+                        Slush
+                      </a>{" "}
+                      extension (or another Sui wallet), switch it to Testnet, then reload this page.
+                    </span>
+                  </div>
                 )}
                 {!pickAccounts && (
                   <div className="actions">
