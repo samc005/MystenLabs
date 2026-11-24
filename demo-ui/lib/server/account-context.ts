@@ -5,7 +5,7 @@
 
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { accountsDir, getAccountByUser } from "./accounts";
+import { accountsDir, getAccountByUser, type Account } from "./accounts";
 import { userFromRequest } from "./session";
 
 export class AccountError extends Error {
@@ -45,6 +45,12 @@ export async function requireAccount(request: Request): Promise<AccountContext> 
   if (!account || account.status !== "active" || !account.vault) {
     throw new AccountError(403, "no_account", "Create your account first.");
   }
+  return contextFor(account);
+}
+
+/** The context for an active account, without a request. Used by the plan scheduler. */
+export async function contextFor(account: Account): Promise<AccountContext> {
+  if (account.status !== "active" || !account.vault) throw new Error("Account is not active.");
   const proposalsDir = proposalsDirFor(account.id);
   await mkdir(proposalsDir, { recursive: true, mode: 0o700 });
   return {

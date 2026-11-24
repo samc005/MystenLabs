@@ -84,6 +84,11 @@ export async function getAccount(id: string): Promise<Account | undefined> {
   return (await load()).find((account) => account.id === id);
 }
 
+/** Every account. For background jobs (the plan scheduler); never sent to a client. */
+export async function listAccounts(): Promise<Account[]> {
+  return load();
+}
+
 export async function getAccountByUser(userId: string): Promise<Account | undefined> {
   if (!userId) return undefined;
   return (await load()).find((account) => account.userId === userId);

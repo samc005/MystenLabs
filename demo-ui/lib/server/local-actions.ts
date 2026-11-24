@@ -7,7 +7,8 @@ import { createSuiClient, formatSui, getSuiBalance } from "@/lib/sui";
 import { listAccountWallets } from "./wallet-mcp";
 import type { WalletAction } from "@/lib/wallet-policy";
 import type { AccountContext } from "./account-context";
-import { createRequest, saveContact } from "./account-store";
+import { createRequest, labelsFor, saveContact } from "./account-store";
+import { MAX_PLAN_PAYMENTS } from "@/lib/plan";
 import type { ChatEvent } from "./agent";
 
 type Send = (event: ChatEvent) => void;
@@ -109,6 +110,40 @@ export async function handleLocalAction(action: WalletAction, account: AccountCo
         delta: `Here's your request for ${args.amount} SUI${request.note ? ` for ${request.note}` : ""}. Send the QR code or link${who}; any Sui wallet like Slush can pay it in one tap. It goes to your wallet, and I'll mark it paid when it arrives.`,
       });
       send({ type: "payment_request", request });
+      return;
+    }
+    case "payment_plan": {
+      const plan = action.args as { amount: string; recipient: string; every: "day" | "week"; count: number };
+      const amountMist = parseToMist(plan.amount);
+      if (amountMist <= 0n || plan.count < 1 || plan.count > MAX_PLAN_PAYMENTS) {
+        send({ type: "text", delta: `A plan can have 1 to ${MAX_PLAN_PAYMENTS} payments, each more than zero.` });
+        return;
+      }
+      const total = amountMist * BigInt(plan.count);
+      const inVault = (await vaultBalance(account)) ?? 0n;
+      const depositMist = total > inVault ? total - inVault : 0n;
+      const label = (await labelsFor(account.accountId))[plan.recipient] ?? `${plan.recipient.slice(0, 6)}…${plan.recipient.slice(-4)}`;
+      send({
+        type: "text",
+        delta:
+          `Here's the plan: ${plan.amount} SUI to ${label} every ${plan.every}, ${plan.count} times (${formatSui(total)} SUI total). ` +
+          `The first payment goes out right after you sign.` +
+          (depositMist > 0n ? ` Your vault has ${formatSui(inVault)} SUI, so signing also moves ${formatSui(depositMist)} SUI from your wallet to cover it.` : ""),
+      });
+      send({
+        type: "owner_action",
+        action: {
+          kind: "plan",
+          recipient: plan.recipient,
+          recipientLabel: label,
+          amountMist: amountMist.toString(),
+          every: plan.every,
+          count: plan.count,
+          startMs: Date.now(),
+          depositMist: depositMist.toString(),
+          note: action.note ?? null,
+        },
+      });
       return;
     }
     default:

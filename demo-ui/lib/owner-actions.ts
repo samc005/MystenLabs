@@ -3,11 +3,14 @@
 // describes the action; it cannot sign it.
 
 import { coinWithBalance, Transaction } from "@mysten/sui/transactions";
+import { buildCancelPlanTx, buildPlanTx, type PlanInput } from "./plan";
 
 export type OwnerAction =
   | { kind: "deposit"; amountMist: string }
   | { kind: "withdraw"; amountMist: string }
-  | { kind: "trust"; address: string; name: string };
+  | { kind: "trust"; address: string; name: string }
+  | ({ kind: "plan"; recipientLabel: string; note: string | null } & PlanInput)
+  | { kind: "cancel_plan"; planId: string; intentIds: string[]; summary: string };
 
 const MODULE = "spending_vault";
 
@@ -19,6 +22,8 @@ export interface VaultRef {
 
 /** The transaction for an owner action. Pure, so it is unit-tested. */
 export function buildOwnerActionTx(action: OwnerAction, vault: VaultRef): Transaction {
+  if (action.kind === "plan") return buildPlanTx(action, vault);
+  if (action.kind === "cancel_plan") return buildCancelPlanTx(action.intentIds, vault);
   const tx = new Transaction();
   const call = (name: string) => `${vault.packageId}::${MODULE}::${name}`;
   if (action.kind === "deposit") {

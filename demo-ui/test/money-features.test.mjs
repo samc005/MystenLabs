@@ -74,7 +74,7 @@ test('owner actions build exactly one owner-signed vault call', () => {
 test('a payment that fails only because the vault is short offers the exact top-up', () => {
   const stub = { createSuiClient: () => ({}), formatSui: (m) => (Number(m) / 1e9).toString(), getSuiBalance: async () => 0n };
   const local = loadTs('lib/server/local-actions.ts', {
-    '@/lib/owner-tx': {}, '@/lib/sui': stub, './wallet-mcp': {}, './account-store': {},
+    '@/lib/owner-tx': {}, '@/lib/sui': stub, '@/lib/plan': { MAX_PLAN_PAYMENTS: 30 }, './wallet-mcp': {}, './account-store': {},
   });
   const offer = local.topUpFor('Error: The vault only holds 0.09 SUI, less than the requested 0.5 SUI.');
   assert.equal(offer.amountMist, '410000000');
