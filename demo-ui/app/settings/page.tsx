@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AccountBar } from "@/components/AccountBar";
+import { ContactsCard } from "@/components/ContactsCard";
 import { createSuiClient, explorerAddressUrl, FAUCET_PAGE_URL, formatSui, getSuiBalance, NETWORK } from "@/lib/sui";
 import { execute } from "@/lib/onboarding";
 import { ownerSigner, OwnerSignerError, startGoogleSignIn, type OwnerKind } from "@/lib/owner-signer";
@@ -220,6 +221,10 @@ export default function SettingsPage() {
             </p>
           )}
         </article>
+
+        {me?.account?.vault && (
+          <ContactsCard trusted={policy?.allowedRecipients ?? []} onChanged={() => void refresh().catch(() => undefined)} />
+        )}
 
         {form && policy && (
           <article className="card">

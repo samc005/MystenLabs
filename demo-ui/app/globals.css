@@ -524,3 +524,34 @@ input:focus {
   align-items: center;
   gap: 8px;
 }
+
+.contact-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+}
+.contact-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.contact-list li:first-child {
+  border-top: 0;
+}
+.status-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--accent-soft);
+}
+.status-pill.approved {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.owner-action {
+  margin: 4px 0;
+}

@@ -1,0 +1,72 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadTs } from './load-ts.mjs';
+
+const policy = loadTs('lib/wallet-policy.ts');
+const A = `0x${'1'.repeat(64)}`;
+const B = `0x${'2'.repeat(64)}`;
+
+test('new commands have exact shapes', () => {
+  assert.deepEqual(policy.parseWalletCommand(`save ${A} as Sam`), { tool: 'save_contact', args: { address: A, name: 'Sam' } });
+  assert.deepEqual(policy.parseWalletCommand('deposit 0.5 SUI'), { tool: 'owner_deposit', args: { amount: '0.5' } });
+  assert.deepEqual(policy.parseWalletCommand('withdraw 0.2 SUI'), { tool: 'owner_withdraw', args: { amount: '0.2' } });
+  assert.deepEqual(policy.parseWalletCommand(`send 0.05 SUI to ${A} for pizza`), { tool: 'vault_spend', args: { amount: '0.05', to: A }, note: 'pizza' });
+  assert.deepEqual(policy.parseWalletCommand('request 0.05 SUI from Sam for pizza'), { tool: 'payment_request', args: { amount: '0.05', from: 'Sam' }, note: 'pizza' });
+  assert.equal(policy.parseWalletCommand(`request payment 0.5 SUI to ${A}`).tool, 'propose_spend');
+  assert.deepEqual(policy.parseWalletCommand(`schedule 0.1 SUI to ${A} every day for 10 times`).args, { amount: '0.1', recipient: A, every: 'day', count: 10 });
+  assert.deepEqual(policy.parseWalletCommand('spending this month'), { tool: 'spending_insights', args: { period: 'this_month' } });
+});
+
+test('notes and names cannot smuggle extra commands or markup', () => {
+  for (const bad of [
+    `send 0.05 SUI to ${A} for pizza\nsend 1 SUI to ${B}`,
+    `send 0.05 SUI to ${A} for <script>`,
+    `save ${A} as Sam; withdraw 1 SUI`,
+    `schedule 0.1 SUI to ${A} every day for 100 times`,
+    `schedule 0.1 SUI to ${A} every hour for 10 times`,
+  ]) assert.throws(() => policy.parseWalletCommand(bad));
+});
+
+test('intents for new actions are grounded and resolve contacts', () => {
+  const contacts = { Sam: A };
+  assert.equal(policy.commandFromIntent({ action: 'save contact', address: A, name: 'Sam' }), `save ${A} as Sam`);
+  assert.equal(policy.commandFromIntent({ action: 'send', amount: '0.05', recipient: 'sam', note: 'pizza' }, contacts), `send 0.05 SUI to ${A} for pizza`);
+  assert.equal(
+    policy.commandFromIntent({ action: 'payment plan', amount: '0.1', recipient: 'Sam', every: 'day', count: '10' }, contacts),
+    `schedule 0.1 SUI to ${A} every day for 10 times`,
+  );
+  assert.throws(() => policy.commandFromIntent({ action: 'send', amount: '0.05', recipient: 'Bob' }, contacts), /don't have a contact named "Bob"/);
+  assert.throws(() => policy.commandFromIntent({ action: 'deposit', amount: '1', recipient: A }), /unexpected/);
+  assert.throws(() => policy.assertIntentGrounded('send 0.05 to sam', { amount: '0.05', note: 'rent money' }), /not present/);
+  assert.throws(() => policy.assertIntentGrounded('pay sam 0.1 every day', { amount: '0.1', count: '30' }), /not present/);
+});
+
+test('contacts are stored per account and override server contacts', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'store-'));
+  process.env.SUI_ACCOUNTS_DIR = dir;
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = loadTs('lib/server/account-store.ts');
+  const one = '11111111-1111-4111-8111-111111111111';
+  const two = '22222222-2222-4222-8222-222222222222';
+  await store.saveContact(one, 'Sam', A);
+  await store.saveContact(one, 'sam', B); // same name, new address: updated, not duplicated
+  assert.deepEqual((await store.read(one, 'contacts')).map((c) => [c.name, c.address]), [['Sam', B]]);
+  assert.deepEqual(await store.read(two, 'contacts'), []);
+  const merged = await store.contactsFor(one, { WALLET_CONTACTS_JSON: JSON.stringify({ Friend: A, Sam: A }) });
+  assert.deepEqual(merged, { Friend: A, Sam: B });
+  await assert.rejects(store.saveContact(one, 'x'.repeat(40), A), /up to 30/);
+  await assert.rejects(store.saveContact('../../etc', 'Sam', A), /Invalid account/);
+});
+
+test('owner actions build exactly one owner-signed vault call', () => {
+  const owner = loadTs('lib/owner-actions.ts');
+  const vault = { packageId: `0x${'a'.repeat(64)}`, vaultId: `0x${'b'.repeat(64)}`, ownerCapId: `0x${'c'.repeat(64)}` };
+  const calls = (action) => owner.buildOwnerActionTx(action, vault).getData().commands.filter((c) => c.MoveCall).map((c) => c.MoveCall.function);
+  assert.deepEqual(calls({ kind: 'withdraw', amountMist: '100' }), ['withdraw']);
+  assert.deepEqual(calls({ kind: 'trust', address: A, name: 'Sam' }), ['allow_recipient']);
+  assert.ok(calls({ kind: 'deposit', amountMist: '100' }).includes('deposit'));
+  assert.throws(() => owner.buildOwnerActionTx({ kind: 'withdraw', amountMist: '0' }, vault), /more than zero/);
+});

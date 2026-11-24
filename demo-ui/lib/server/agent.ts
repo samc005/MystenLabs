@@ -10,7 +10,10 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 import { mcpEnvFor, type AccountContext } from "./account-context";
 import { walletMcpDir, walletMcpEntry } from "./wallet-mcp";
 
-import { parseWalletCommand, assertToolAction } from "@/lib/wallet-policy";
+import { parseWalletCommand, assertToolAction, LOCAL_TOOLS } from "@/lib/wallet-policy";
+import type { OwnerAction } from "@/lib/owner-actions";
+import { contactsFor } from "./account-store";
+import { handleLocalAction } from "./local-actions";
 import { rememberPrepared } from "./wallet-execution";
 import { cleanToolText, leadFor, presentBalance, presentVault } from "./chat-presenter";
 
@@ -36,6 +39,8 @@ export type ChatEvent =
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError: boolean }
   | { type: "prepared"; id: string; command: string; summary: string }
+  /** An owner action for the user's own wallet to sign in the browser. The server cannot sign it. */
+  | { type: "owner_action"; action: OwnerAction }
   | { type: "done"; messages: Anthropic.Beta.BetaMessageParam[] }
   | { type: "error"; message: string };
 
@@ -88,7 +93,7 @@ export async function runChatTurn(
 ): Promise<void> {
   const last = history.at(-1);
   if (!last || last.role !== "user" || typeof last.content !== "string") throw new Error("Send a wallet command.");
-  const resolved = await resolveMessage(last.content, signal);
+  const resolved = await resolveMessage(last.content, signal, await contactsFor(account.accountId));
   if (resolved.kind === "reply") {
     send({ type: "reply", text: resolved.text, disclaimer: resolved.disclaimer });
     send({ type: "done", messages: [] });
@@ -96,6 +101,11 @@ export async function runChatTurn(
   }
   const command = resolved.command;
   const action = parseWalletCommand(command);
+  if (LOCAL_TOOLS.has(action.tool)) {
+    await handleLocalAction(action, account, send);
+    send({ type: "done", messages: [] });
+    return;
+  }
   const mcp = await connectWalletMcp(account);
   try {
     assertToolAction(action, action.tool, action.args);

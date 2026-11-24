@@ -15,12 +15,17 @@ export const DISCLAIMER =
   'Cipher is not a financial advisor. This is general information, not financial, investment, tax or legal advice. Do your own research before deciding.';
 
 const intentProperties = {
-  action: { type: 'string', enum: ['balance', 'vault status', 'validators', 'send', 'payment proposal', 'stake', 'quote', 'swap'] },
+  action: {
+    type: 'string',
+    enum: ['balance', 'vault status', 'validators', 'send', 'payment proposal', 'stake', 'quote', 'swap', 'save contact'],
+  },
   amount: { type: 'string', description: 'Decimal digits only, e.g. "0.05". Use only a number the user wrote.' },
   recipient: { type: 'string', description: 'A full 0x address the user wrote, or a contact name exactly as listed.' },
   validator: { type: 'string', description: 'A full 0x validator address the user wrote.' },
   sell: { type: 'string', enum: ['SUI', 'tUSDC'] },
   buy: { type: 'string', enum: ['SUI', 'tUSDC'] },
+  address: { type: 'string', description: 'save contact: the full 0x address the user wrote.' },
+  name: { type: 'string', description: 'save contact: the name the user gave, as written.' },
 } as const;
 
 const SYSTEM = `You are Cipher, a friendly money assistant inside the user's Sui testnet wallet app. Users type casually: typos, slang, lowercase. Understand what they mean and call exactly one tool.
@@ -34,6 +39,7 @@ Call wallet_intent when the user clearly wants ONE of these actions and every re
 - stake: stake SUI with a validator (amount, validator)
 - quote: price check, "how much X would I get for Y" (amount, sell, buy)
 - swap: trade/swap/convert between SUI and tUSDC (amount, sell, buy). "usdc" means tUSDC.
+- save contact: remember an address under a name, "save 0x… as Sam", "add Sam 0x… to my contacts" (address, name)
 Include ONLY the fields for that action. Write amounts as digits ("five" -> "5", "half a sui" -> "0.5"). Recipients: a full 0x address copied exactly, or one of these saved contact names: {{CONTACTS}}. "my friend" may mean a contact named Friend. Never invent, shorten, complete or guess an address, amount, asset or validator.
 
 Otherwise call reply, with one of these types:
@@ -71,7 +77,12 @@ function contactsFromEnv(): Record<string, string> {
   }
 }
 
-export async function resolveMessage(text: string, signal: AbortSignal): Promise<ResolvedMessage> {
+export async function resolveMessage(
+  text: string,
+  signal: AbortSignal,
+  /** Name -> address for this account (server-configured plus the user's own). */
+  contacts: Record<string, string> = contactsFromEnv(),
+): Promise<ResolvedMessage> {
   if (text.length > 2000) throw new Error('Request too long.');
   // Exact commands skip the model entirely.
   try {
@@ -81,7 +92,6 @@ export async function resolveMessage(text: string, signal: AbortSignal): Promise
     /* Natural language: translate below. */
   }
 
-  const contacts = contactsFromEnv();
   const names = Object.keys(contacts);
   const response = await new Anthropic().messages.create(
     {

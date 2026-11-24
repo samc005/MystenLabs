@@ -8,12 +8,15 @@ import { approveProposal, getPasskeyStatus, hashProposal, registerPasskey } from
 import { isSpendProposal } from "@/lib/proposals";
 import { ProposalCard } from "./ProposalCard";
 import { RichText } from "./RichText";
+import { OwnerActionCard } from "./OwnerActionCard";
+import type { OwnerAction } from "@/lib/owner-actions";
 import { TOOL_WORKING } from "@/lib/display";
 
 type Item =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; disclaimer?: string | null }
   | { kind: "tool"; id: string; name: string; input: unknown; output?: string; isError?: boolean }
+  | { kind: "owner_action"; action: OwnerAction }
   | { kind: "error"; text: string };
 
 const SUGGESTIONS = [
@@ -108,6 +111,9 @@ export function ChatPanel({ onToolResult, labels }: Props) {
             break;
           case "text":
             appendText(event.delta);
+            break;
+          case "owner_action":
+            setItems((previous) => [...previous, { kind: "owner_action", action: event.action }]);
             break;
           case "reply":
             setItems((previous) => [...previous, { kind: "assistant", text: event.text, disclaimer: event.disclaimer }]);
@@ -205,6 +211,7 @@ export function ChatPanel({ onToolResult, labels }: Props) {
               </div>
             );
           }
+          if (item.kind === "owner_action") return <OwnerActionCard key={i} action={item.action} onDone={onToolResult} />;
           if (item.kind === "error") return <div key={i} className="bubble error">{item.text}</div>;
           const pending = item.output === undefined;
           const proposalId = (item.name === "propose_trade" || item.name === "propose_spend") && !item.isError ? item.output?.match(PROPOSAL_ID)?.[1] : undefined;

@@ -1,5 +1,6 @@
 import { accountErrorResponse, requireAccount } from "@/lib/server/account-context";
-import { contactLabels, recentActivity } from "@/lib/server/activity";
+import { labelsFor } from "@/lib/server/account-store";
+import { recentActivity } from "@/lib/server/activity";
 import { rejectNonLocal } from "@/lib/server/local-only";
 
 export const runtime = "nodejs";
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
   if (rejected) return rejected;
   try {
     const account = await requireAccount(request);
-    const entries = await recentActivity(account, { labels: contactLabels() });
+    const entries = await recentActivity(account, { labels: await labelsFor(account.accountId) });
     return Response.json({ entries });
   } catch (error) {
     return accountErrorResponse(error) ?? Response.json({ error: "Could not load recent transactions." }, { status: 502 });
