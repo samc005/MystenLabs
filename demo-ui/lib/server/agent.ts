@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { resolveWalletCommand } from "./wallet-intent";
+import { resolveMessage } from "./wallet-intent";
 // The chat demo's agent loop: Claude on the Messages API, with tools that come
 // from the real wallet-mcp server. The server is started over stdio exactly as
 // Claude Code would start it from .mcp.json, and every tool call goes through it.
@@ -10,14 +10,40 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 import { mcpEnvFor, type AccountContext } from "./account-context";
 import { walletMcpDir, walletMcpEntry } from "./wallet-mcp";
 
-import { parseWalletCommand, assertToolAction } from "@/lib/wallet-policy";
+import { parseWalletCommand, assertToolAction, LOCAL_TOOLS } from "@/lib/wallet-policy";
+import type { OwnerAction } from "@/lib/owner-actions";
+import type { PaymentRequestView } from "@/lib/payment-request";
+import { contactsFor } from "./account-store";
+import { handleLocalAction, topUpFor } from "./local-actions";
 import { rememberPrepared } from "./wallet-execution";
+import { cleanToolText, leadFor, presentBalance, presentVault } from "./chat-presenter";
+
+/** What the user reads in chat for a wallet result. Falls back to the cleaned tool text. */
+async function presentResult(tool: string, output: string, isError: boolean, prepared: boolean, account: AccountContext): Promise<string> {
+  if (isError) return `That didn't go through: ${cleanToolText(output) || "the wallet refused it."}`;
+  try {
+    if (tool === "get_balance") return await presentBalance(account);
+    if (tool === "vault_status") return await presentVault(account);
+  } catch {
+    // Fall through to the tool's own text, which has the same facts.
+  }
+  const lead = leadFor(tool, prepared);
+  if (prepared) return lead!;
+  const body = cleanToolText(output);
+  return lead ? `${lead}\n${body}` : body;
+}
 
 export type ChatEvent =
   | { type: "text"; delta: string }
+  /** Plain-text reply: a clarifying question or a general answer. Never an action. */
+  | { type: "reply"; text: string; disclaimer: string | null }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError: boolean }
   | { type: "prepared"; id: string; command: string; summary: string }
+  /** An owner action for the user's own wallet to sign in the browser. The server cannot sign it. */
+  | { type: "owner_action"; action: OwnerAction }
+  /** A payment request the user can share as a QR code or link. */
+  | { type: "payment_request"; request: PaymentRequestView }
   | { type: "done"; messages: Anthropic.Beta.BetaMessageParam[] }
   | { type: "error"; message: string };
 
@@ -70,8 +96,19 @@ export async function runChatTurn(
 ): Promise<void> {
   const last = history.at(-1);
   if (!last || last.role !== "user" || typeof last.content !== "string") throw new Error("Send a wallet command.");
-  const command = await resolveWalletCommand(last.content, signal);
+  const resolved = await resolveMessage(last.content, signal, await contactsFor(account.accountId));
+  if (resolved.kind === "reply") {
+    send({ type: "reply", text: resolved.text, disclaimer: resolved.disclaimer });
+    send({ type: "done", messages: [] });
+    return;
+  }
+  const command = resolved.command;
   const action = parseWalletCommand(command);
+  if (LOCAL_TOOLS.has(action.tool)) {
+    await handleLocalAction(action, account, send);
+    send({ type: "done", messages: [] });
+    return;
+  }
   const mcp = await connectWalletMcp(account);
   try {
     assertToolAction(action, action.tool, action.args);
@@ -85,10 +122,17 @@ export async function runChatTurn(
       const simulation = await mcp.callTool({ name: "estimate_gas", arguments: { transactionBase64: structured.transactionBytes } });
       if (simulation.isError) throw new Error("Simulation failed. Nothing was signed or submitted.");
       output += "\n" + toolResultText(simulation);
-      const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output);
+      const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output, action.note);
       send({ type: "prepared", id, command, summary: output });
     }
-    send({ type: "text", delta: output });
+    const topUp = result.isError ? topUpFor(toolResultText(result)) : null;
+    if (topUp) {
+      send({ type: "text", delta: topUp.text });
+      send({ type: "owner_action", action: { kind: "deposit", amountMist: topUp.amountMist } });
+      send({ type: "done", messages: [] });
+      return;
+    }
+    send({ type: "text", delta: await presentResult(action.tool, toolResultText(result), Boolean(result.isError), typeof structured?.transactionBytes === "string", account) });
     send({ type: "done", messages: [] });
   } finally {
     await mcp.close().catch(() => undefined);

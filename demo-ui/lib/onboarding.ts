@@ -4,10 +4,11 @@
 // Safe to re-run: every step looks at what already exists (server account, OwnerCap, AgentCap)
 // and skips it, so a failed or closed tab resumes instead of creating a second vault or agent.
 
-import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import type { Signer } from "@mysten/sui/cryptography";
 import type { Transaction } from "@mysten/sui/transactions";
 import {
   buildCreateVaultTx,
+  buildLinkAgentTx,
   buildSetupTx,
   findAgentCap,
   findOwnerCap,
@@ -23,6 +24,7 @@ export type OnboardingStep = "check" | "agent" | "vault" | "configure" | "verify
 export interface OnboardingAccount {
   id: string;
   ownerAddress: string;
+  ownerKind?: "zklogin" | "wallet" | "browser";
   agentAddress: string;
   status: "pending" | "active";
   vault?: { packageId: string; vaultId: string; ownerCapId: string; agentCapId: string };
@@ -38,7 +40,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** Signs with the owner's key, submits, and waits. Shared by onboarding and the settings page. */
-export async function execute(client: Client, signer: Ed25519Keypair, tx: Transaction): Promise<string> {
+export async function execute(client: Client, signer: Signer, tx: Transaction): Promise<string> {
   tx.setSender(signer.toSuiAddress());
   const submitted = await client.signAndExecuteTransaction({ transaction: tx, signer, include: { effects: true } });
   if (submitted.$kind === "FailedTransaction") {
@@ -68,8 +70,16 @@ export async function loadAccount(ownerAddress: string): Promise<OnboardingAccou
   return account;
 }
 
+/** The vault this wallet already owns from our package, if any. Reusing it keeps its funds and limits. */
+export async function findExistingVault(ownerAddress: string, packageId: string) {
+  return findOwnerCap(createSuiClient() as unknown as ChainReader, ownerAddress, packageId);
+}
+
 export async function createAccount(input: {
-  owner: Ed25519Keypair;
+  owner: Signer;
+  ownerKind: "zklogin" | "wallet" | "browser";
+  /** For wallet and browser owners: the signed link message proving control of the address. */
+  proof?: { token: string; signature: string };
   policy: OnboardingPolicy;
   onStep: (step: OnboardingStep, detail?: string) => void;
 }): Promise<OnboardingAccount> {
@@ -81,7 +91,12 @@ export async function createAccount(input: {
 
   onStep("check");
   const balance = await getSuiBalance(client, ownerAddress);
-  const required = requiredOwnerBalanceMist(policy);
+  const { packageId: configuredPackage } = await api<{ packageId: string }>(
+    `/api/accounts?owner=${encodeURIComponent(ownerAddress)}`,
+  );
+  const reusing = await findOwnerCap(reader, ownerAddress, configuredPackage);
+  // Reusing a vault only costs the agent's gas and fees; a new one also needs the deposit.
+  const required = reusing ? policy.agentGasMist + 20_000_000n : requiredOwnerBalanceMist(policy);
   if (balance < required) {
     throw new Error(
       `Your wallet has ${formatSui(balance)} SUI and needs about ${formatSui(required)} SUI ` +
@@ -93,7 +108,7 @@ export async function createAccount(input: {
   const { account, packageId } = await api<{ account: OnboardingAccount; packageId: string }>("/api/accounts", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ownerAddress }),
+    body: JSON.stringify({ ownerAddress, ownerKind: input.ownerKind, proof: input.proof }),
   });
   if (account.status === "active") return account;
 
@@ -106,16 +121,11 @@ export async function createAccount(input: {
 
   onStep("configure");
   if (!(await findAgentCap(reader, account.agentAddress, packageId, vault.vaultId))) {
+    const base = { packageId, vaultId: vault.vaultId, ownerCapId: vault.ownerCapId, agentAddress: account.agentAddress };
     await execute(
       client,
       owner,
-      buildSetupTx({
-        packageId,
-        vaultId: vault.vaultId,
-        ownerCapId: vault.ownerCapId,
-        agentAddress: account.agentAddress,
-        policy,
-      }),
+      reusing ? buildLinkAgentTx({ ...base, agentGasMist: policy.agentGasMist }) : buildSetupTx({ ...base, policy }),
     );
     await eventually(() => findAgentCap(reader, account.agentAddress, packageId, vault.vaultId), "the agent authorization");
   }

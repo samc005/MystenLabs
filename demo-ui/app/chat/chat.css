@@ -355,3 +355,125 @@ button.small-btn {
     height: 70vh;
   }
 }
+
+/* Readable tool output: short labeled addresses, receipt links. */
+.rich {
+  white-space: normal;
+}
+.rich-line {
+  min-height: 1.3em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tool-card .rich {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.addr {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  white-space: nowrap;
+}
+.addr a {
+  color: inherit;
+  text-decoration: none;
+}
+.addr a:hover {
+  text-decoration: underline;
+}
+.addr .copy {
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.bubble.user .addr {
+  background: rgba(255, 255, 255, 0.18);
+}
+.receipt-link {
+  font-weight: 600;
+}
+.tool-card details {
+  padding: 0 12px 8px;
+  color: var(--muted);
+}
+.tool-card details summary {
+  cursor: pointer;
+  font-size: 11px;
+}
+.tool-card details pre {
+  padding: 6px 0 0;
+}
+.tool-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.confirm-card {
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--accent-soft);
+}
+.confirm-card .rich {
+  margin: 8px 0;
+  font-size: 13px;
+}
+.disclaimer {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Recent transactions */
+.activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.activity li {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.activity li:first-child {
+  border-top: 0;
+}
+.activity li.failed .activity-title {
+  color: var(--error);
+}
+.activity-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.activity-title {
+  font-weight: 600;
+}
+.activity-amount.in {
+  color: var(--ok);
+}
+.activity-amount {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.activity-meta a {
+  color: inherit;
+}
+.activity-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 13px;
+}

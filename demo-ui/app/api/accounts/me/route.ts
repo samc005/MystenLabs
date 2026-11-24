@@ -10,6 +10,7 @@ function publicAccount(account: Account) {
     id: account.id,
     status: account.status,
     ownerAddress: account.ownerAddress,
+    ownerKind: account.ownerKind ?? "browser",
     agentAddress: account.agentAddress,
     vault: account.vault ?? null,
     displayName: account.displayName ?? null,
