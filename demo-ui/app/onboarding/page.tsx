@@ -12,6 +12,7 @@ import {
   getSuiBalance,
   NETWORK,
 } from "@/lib/sui";
+import { SignOutButton } from "@/components/SignOutButton";
 import { loadWallet } from "@/lib/wallet";
 import { createAccount, findExistingVault, type OnboardingAccount, type OnboardingStep } from "@/lib/onboarding";
 import { DEFAULT_ONBOARDING_POLICY, requiredOwnerBalanceMist, type OnboardingPolicy } from "@/lib/owner-tx";
@@ -286,7 +287,11 @@ export default function Onboarding() {
           <button onClick={() => void startGoogleSignIn()}>Sign in with Google</button>
         </div>
       )}
-      {user && <p className="muted small">Signed in as {user.email}.</p>}
+      {user && (
+        <p className="muted small">
+          Signed in as {user.email}. <SignOutButton />
+        </p>
+      )}
 
       {user && !active && (
         <section className="steps">
