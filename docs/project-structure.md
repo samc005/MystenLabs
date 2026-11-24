@@ -1,73 +1,49 @@
-# TypeScript Project Structure
+# Project structure
 
-## Proposed layout
+## Repository layout
 
-```text
-wallet-mcp/
-├── src/
-│   ├── index.ts
-│   ├── mcp/
-│   │   ├── server.ts
-│   │   └── tools/
-│   │       ├── getBalance.ts
-│   │       ├── transfer.ts
-│   │       └── index.ts
-│   ├── blockchain/
-│   │   ├── client.ts
-│   │   ├── balance.ts
-│   │   ├── transfer.ts
-│   │   └── types.ts
-│   └── config.ts
-├── package.json
-├── package-lock.json
-├── tsconfig.json
-├── .gitignore
-└── README.md
-```
-
-## Proposed module responsibilities
-
-The following responsibilities describe the proposed modules in this layout.
-
-| File | Responsibility |
+| Directory | Responsibility |
 | --- | --- |
-| `src/index.ts` | Load configuration, create dependencies, and start the MCP server |
-| `src/config.ts` | Parse and validate runtime configuration; centralize network selection |
-| `src/mcp/server.ts` | Configure MCP transport and register tools |
-| `src/mcp/tools/index.ts` | Export or register the available tool definitions |
-| `src/mcp/tools/getBalance.ts` | Define the balance input schema and translate service results into tool responses |
-| `src/mcp/tools/transfer.ts` | Validate transfer inputs and orchestrate preparation, approval, and execution |
-| `src/blockchain/client.ts` | Construct the Sui client using validated network configuration |
-| `src/blockchain/balance.ts` | Query balance data and return typed results |
-| `src/blockchain/transfer.ts` | Build transfers and expose submission/result handling through the selected execution interface |
-| `src/blockchain/types.ts` | Define shared service inputs, results, and transaction state types |
-| `package.json` | Declare dependencies and development/build scripts |
-| `package-lock.json` | Record reproducible npm dependency resolution |
-| `tsconfig.json` | Configure TypeScript compilation |
-| `.gitignore` | Exclude generated output, local configuration, and secrets |
-| `README.md` | Explain setup, supported tools, network configuration, and usage |
+| `demo-ui/` | Next.js browser wallet, local Cipher chat, passkey authorization, and proposal service |
+| `wallet-mcp/` | MCP server, Sui transaction services, isolated signer, and operational scripts |
+| `my_counter/` | Move spending vault, deployment metadata, and policy regression tests |
+| `testnet_pool/` | Move test token and fixed-rate testnet swap pool, with deployment metadata |
+| `docs/` | Design, setup, security boundaries, demo runbooks, and dated verification evidence |
 
-## Dependency direction
+`my_counter` retains its original package name but contains the spending vault;
+it is an active contract package. The testnet pool is used by the swap tools.
+Keep their Move lockfiles and published metadata for reproducible builds and deployment tracking.
 
-```mermaid
-flowchart LR
-    ENTRY[index.ts] --> CONFIG[config.ts]
-    ENTRY --> SERVER[mcp/server.ts]
-    SERVER --> TOOLS[mcp/tools]
-    TOOLS --> SERVICE[blockchain/balance.ts and transfer.ts]
-    SERVICE --> CLIENT[blockchain/client.ts]
-    SERVICE --> TYPES[blockchain/types.ts]
-```
+## UI and authorization
 
-Keep MCP protocol details in `mcp/` and chain-specific transaction/query logic in `blockchain/`. Construct dependencies at startup and pass them to the modules that need them. This allows tool validation and blockchain behavior to be verified separately.
+- `demo-ui/app/`: pages and API routes for chat, passkeys, proposals, script execution, and wallets.
+- `demo-ui/components/`: chat, proposal, script runner, and wallet panels.
+- `demo-ui/lib/server/`: model/MCP integration, passkey verification, proposal storage, intent validation, and wallet execution.
+- `demo-ui/lib/`: browser wallet helpers, shared policy logic, and response parsing.
+- `demo-ui/scripts/` and `demo-ui/test/`: recovery, security verification, rehearsals, and authorization regression tests.
 
-## Additional components to design
+## Wallet services
 
-The architecture includes a wallet/signing layer and a Move contract whose implementations are not yet specified in the proposed layout. Once the integration decisions are made, add:
+- `wallet-mcp/src/index.ts`: stdio MCP entry point.
+- `wallet-mcp/src/config.ts`: network configuration and public deployment identifiers.
+- `wallet-mcp/src/mcp/`: server configuration and tool definitions.
+- `wallet-mcp/src/blockchain/`: Sui reads, transaction preparation/submission, vaults, proposals, and swaps.
+- `wallet-mcp/src/signer/`: authenticated signer client, protocol, and separate signer process.
+- `wallet-mcp/src/scripts/`: setup, balance, transfer, vault, owner, demo, and preflight commands.
+- `wallet-mcp/src/web.ts` and `wallet-mcp/web/`: standalone local wallet web demo.
+- `wallet-mcp/test/`: signer and owner setup regression tests.
 
-- `src/wallet/`: approval and signing interfaces plus the chosen wallet adapter.
-- A Move package directory or a separately maintained contract repository: policy implementation and contract tests.
-- Operation storage: needed if approval and execution continue asynchronously.
-- A swap tool and service module: needed before advertising swap as implemented.
+The UI starts the wallet MCP server over stdio. Tools use the blockchain services;
+signing requests go through the isolated signer. See the
+[authenticated workflow](authenticated-workflow.md) and
+[signer setup](../wallet-mcp/README.md#isolated-signer) for configuration and trust boundaries.
 
-This layout and its additions describe the intended design rather than the current repository contents.
+## Local and generated files
+
+Install and build the two Node packages separately using their READMEs. Their
+`node_modules/`, build output, local environment files, wallet secrets, and
+passkey state are ignored by Git. Commit the package lockfiles and environment
+examples; keep populated environment files and private state local.
+
+Dated JSON evidence and demo notes in `docs/` record prior verification runs.
+They are historical evidence rather than live deployment status.
