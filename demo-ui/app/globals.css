@@ -583,3 +583,29 @@ input:focus {
   padding-left: 14px;
   border-left: 2px solid var(--border, rgba(127, 127, 127, 0.25));
 }
+
+/* Checkboxes sit inline with their label, not stretched like text inputs. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+.toggle input {
+  width: 16px;
+  height: 16px;
+}
+.holdings-line {
+  margin: 0 0 14px;
+}

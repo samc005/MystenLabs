@@ -13,10 +13,10 @@ import { walletMcpDir, walletMcpEntry } from "./wallet-mcp";
 import { parseWalletCommand, assertToolAction, LOCAL_TOOLS } from "@/lib/wallet-policy";
 import type { OwnerAction } from "@/lib/owner-actions";
 import type { PaymentRequestView } from "@/lib/payment-request";
-import { contactsFor } from "./account-store";
+import { contactsFor, labelsFor } from "./account-store";
 import { handleLocalAction, topUpAndPayFor, topUpFor } from "./local-actions";
 import { rememberPrepared } from "./wallet-execution";
-import { cleanToolText, leadFor, presentBalance, presentVault } from "./chat-presenter";
+import { cleanToolText, friendlyRefusal, leadFor, presentBalance, presentVault } from "./chat-presenter";
 import { readVaultPolicy, type PolicyReader } from "@/lib/owner-tx";
 import { createSuiClient } from "@/lib/sui";
 import { validatorNamesFor } from "./validators";
@@ -29,7 +29,11 @@ export function autoSwapProposal(output: string): string | null {
 
 /** What the user reads in chat for a wallet result. Falls back to the cleaned tool text. */
 async function presentResult(tool: string, output: string, isError: boolean, prepared: boolean, account: AccountContext): Promise<string> {
-  if (isError) return `That didn't go through: ${cleanToolText(output) || "the wallet refused it."}`;
+  if (isError) {
+    const labels = await labelsFor(account.accountId).catch(() => ({}));
+    const reason = friendlyRefusal(output, labels).replace(/\s*Nothing (was|has been) (sent|traded|signed)[^.]*\./gi, "").trim();
+    return `That didn't go through. ${reason || "The wallet refused it."} Nothing was sent.`;
+  }
   try {
     if (tool === "get_balance") return await presentBalance(account);
     if (tool === "vault_status") return await presentVault(account);

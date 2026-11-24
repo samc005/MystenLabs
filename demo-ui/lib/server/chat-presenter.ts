@@ -11,14 +11,17 @@ const sui = (mist: bigint | string | null | undefined) => (mist == null ? "?" : 
 /** "Your money": the owner wallet and the vault. Cipher's gas key is a side note, not your balance. */
 export async function presentBalance(account: AccountContext): Promise<string> {
   const client = createSuiClient();
-  const [wallets, ownerCoins] = await Promise.all([
+  const [wallets, ownerCoins, policy] = await Promise.all([
     listAccountWallets(account),
     getAllBalances(client, account.ownerAddress).catch(() => []),
+    readVaultPolicy(client as unknown as PolicyReader, account.vaultId).catch(() => null),
   ]);
   const balance = (role: string) => wallets.find((wallet) => wallet.role === role)?.balanceMist ?? null;
   const owner = balance("owner");
   const vault = balance("vault");
-  const total = owner != null && vault != null ? BigInt(owner) + BigInt(vault) : null;
+  const staked = policy?.stake?.stakedMist ?? 0n;
+  const trading = policy?.tradingSuiMist ?? 0n;
+  const total = owner != null && vault != null ? BigInt(owner) + BigInt(vault) + staked + trading : null;
   const others = ownerCoins.filter((coin) => coin.symbol !== "SUI" && coin.raw > 0n);
 
   const lines = [
@@ -26,6 +29,8 @@ export async function presentBalance(account: AccountContext): Promise<string> {
     `• ${sui(owner)} in your wallet`,
     `• ${sui(vault)} in your vault (what Cipher can spend for you)`,
   ];
+  if (staked > 0n) lines.push(`• ${sui(staked)} staked from your vault, earning rewards`);
+  if (trading > 0n) lines.push(`• ${sui(trading)} set aside in your vault for swaps`);
   for (const coin of others) lines.push(`• ${coin.formatted} ${coin.symbol} in your wallet`);
   lines.push("", `Cipher also keeps ${sui(balance("agent"))} to pay network fees.`);
   return lines.join("\n");
@@ -49,12 +54,18 @@ export async function presentVault(account: AccountContext): Promise<string> {
     lines.push(
       policy.allowedRecipients.length
         ? `• Only to your trusted recipients: ${policy.allowedRecipients.join(", ")}`
-        : "• No trusted recipients yet, so every payment needs your approval",
+        : "• No trusted recipients yet, so Cipher can't pay anyone directly",
     );
+  } else if (policy.agent) {
+    lines.push('• Cipher can\'t pay anyone yet: turn on "Only pay trusted recipients directly" in Account settings');
   } else {
     lines.push("• To any recipient");
   }
-  lines.push("", "Anything outside these limits needs your approval first. You can change them in Account settings.");
+  if (policy.agent?.staking) {
+    lines.push(`• Staking is on: ${sui(policy.stake?.stakedMist ?? 0n)} staked of up to ${sui(policy.stake?.maxStakedMist ?? 0n)}`);
+  }
+  if (policy.agent?.trading) lines.push(`• Swaps are on: ${sui(policy.tradingSuiMist ?? 0n)} in your trading balance`);
+  lines.push("", "Payments outside these limits aren't sent. You can change them in Account settings.");
   return lines.join("\n");
 }
 
@@ -66,6 +77,42 @@ export function cleanToolText(text: string): string {
     .map((line) => line.replace(/\s*\(0x[0-9a-fA-F]+::\w+::\w+\)/g, ""))
     .join("\n")
     .trim();
+}
+
+const FULL_ADDRESS = "(0x[0-9a-fA-F]{64})";
+const AMOUNT = "([0-9][0-9.,]* SUI)";
+
+/**
+ * Wallet refusals are written for the AI model ("call propose_spend…"). Rewrite the ones we know
+ * into plain words with what to do next, and drop any sentence that names internal tools.
+ */
+export function friendlyRefusal(text: string, labels: Record<string, string> = {}): string {
+  const cleaned = cleanToolText(text).replace(/^Error:\s*/i, "");
+  const who = (address: string) => labels[address.toLowerCase()] ?? `${address.slice(0, 6)}…${address.slice(-4)}`;
+  const rules: [RegExp, (match: RegExpMatchArray) => string][] = [
+    [/Mandatory on-chain payment policy is not configured/, () => 'Cipher can\'t pay anyone yet. Turn on "Only pay trusted recipients directly" in Account settings, then try again.'],
+    [/Payments are disabled/, () => "Payments are turned off for Cipher. You can turn them back on in Account settings."],
+    [new RegExp(`${FULL_ADDRESS} is not on the vault's recipient allowlist`), (m) => `${who(m[1]!)} isn't a trusted recipient yet. Trust them in Account settings → Contacts, then try again.`],
+    [new RegExp(`${FULL_ADDRESS} is blocked`), (m) => `${who(m[1]!)} is blocked, so Cipher won't pay them.`],
+    [new RegExp(`is over the per-spend limit of ${AMOUNT}`), (m) => `That's over your per-payment limit of ${m[1]}. You can change it in Account settings.`],
+    [new RegExp(`per-spend limit\\. Requested ${AMOUNT}, limit is ${AMOUNT}`), (m) => `That's over your per-payment limit of ${m[2]}. You can change it in Account settings.`],
+    [new RegExp(`more than the ${AMOUNT} left of this epoch's spending cap`), (m) => `That's more than the ${m[1]} left in today's spending limit.`],
+    [/vault is paused/, () => "Your vault is paused, so nothing can go out right now."],
+    [/Validator \S+ is not on the vault's allowlist/, () => "That validator isn't one you approved. Add it in Account settings → What Cipher can do."],
+    [new RegExp(`at least ${AMOUNT} per stake`), (m) => `Sui's minimum stake is ${m[1]}.`],
+    [new RegExp(`stake limit: ${AMOUNT} is already staked and the owner allows at most ${AMOUNT}`), (m) => `You already have ${m[1]} staked, and your limit is ${m[2]}. You can raise it in Account settings.`],
+    [/already has (\d+) staking positions/, (m) => `You already have ${m[1]} stakes, the most you allow. You can raise it in Account settings.`],
+    [new RegExp(`leave less than the ${AMOUNT} the owner wants kept liquid`), (m) => `That would leave less than the ${m[1]} you keep unstaked in your vault.`],
+    [/trading sleeve holds ([^,]+),/, (m) => `Your trading balance only has ${m[1]}. Move more into it in Account settings → What Cipher can do.`],
+  ];
+  for (const [pattern, say] of rules) {
+    const match = cleaned.match(pattern);
+    if (match) return say(match);
+  }
+  const kept = cleaned
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !/\b[a-z]+_[a-z_]+\b|npm run|\bcall\b|propos/i.test(sentence));
+  return kept.join(" ").trim() || "The wallet refused it.";
 }
 
 /** A friendly lead-in for each kind of result. */

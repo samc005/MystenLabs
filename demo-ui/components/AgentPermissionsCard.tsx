@@ -82,11 +82,15 @@ export function AgentPermissionsCard({ account, policy, onSaved }: Props) {
         contract enforces them; one passkey approval and one wallet signature save everything.
       </p>
 
-      <label className="field">
-        <span>
-          <input type="checkbox" checked={form.staking} onChange={(e) => set({ staking: e.target.checked })} disabled={disabled} /> Let
-          Cipher stake SUI from the vault
-        </span>
+      <p className="muted small holdings-line">
+        Staked now: <strong>{formatDecimal(policy.stake?.stakedMist ?? 0n, 9)} SUI</strong>
+        {policy.stake ? ` in ${policy.stake.positions.toString()} stake${policy.stake.positions === 1n ? "" : "s"}` : ""} · Set aside for swaps:{" "}
+        <strong>{formatDecimal(policy.tradingSuiMist ?? 0n, 9)} SUI</strong> · In your vault: <strong>{formatDecimal(policy.balanceMist ?? 0n, 9)} SUI</strong>
+      </p>
+
+      <label className="toggle">
+        <input type="checkbox" checked={form.staking} onChange={(e) => set({ staking: e.target.checked })} disabled={disabled} />
+        <span>Let Cipher stake SUI from the vault</span>
       </label>
       {form.staking && (
         <div className="permission-group">
@@ -128,20 +132,13 @@ export function AgentPermissionsCard({ account, policy, onSaved }: Props) {
               ))}
             </select>
           </div>
-          {policy.stake && (
-            <p className="muted small">
-              Staked now: {formatDecimal(policy.stake.stakedMist, 9)} SUI in {policy.stake.positions.toString()} stake(s). Sui&apos;s minimum stake
-              is 1 SUI.
-            </p>
-          )}
+          <p className="muted small">Sui&apos;s minimum stake is 1 SUI.</p>
         </div>
       )}
 
-      <label className="field">
-        <span>
-          <input type="checkbox" checked={form.trading} onChange={(e) => set({ trading: e.target.checked })} disabled={disabled} /> Let
-          Cipher swap SUI for tUSDC
-        </span>
+      <label className="toggle">
+        <input type="checkbox" checked={form.trading} onChange={(e) => set({ trading: e.target.checked })} disabled={disabled} />
+        <span>Let Cipher swap SUI for tUSDC</span>
       </label>
       {form.trading && (
         <div className="permission-group">

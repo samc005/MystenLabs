@@ -290,16 +290,14 @@ export default function SettingsPage() {
                 disabled={disabled}
               />
             </label>
-            <label className="field">
-              <span>
-                <input
-                  type="checkbox"
-                  checked={form.enforce}
-                  onChange={(event) => setForm({ ...form, enforce: event.target.checked })}
-                  disabled={disabled}
-                />{" "}
-                Only pay trusted recipients directly
-              </span>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={form.enforce}
+                onChange={(event) => setForm({ ...form, enforce: event.target.checked })}
+                disabled={disabled}
+              />
+              <span>Only pay trusted recipients directly</span>
             </label>
 
             <div className="field">

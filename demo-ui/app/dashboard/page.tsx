@@ -154,6 +154,17 @@ function PlanRow({ plan, onChanged }: { plan: PaymentPlan; onChanged: () => void
   );
 }
 
+interface Holdings {
+  walletMist: string;
+  vaultMist: string;
+  stakedMist: string;
+  stakes: number;
+  maxStakedMist: string | null;
+  tradingMist: string;
+  stakingOn: boolean;
+  tradingOn: boolean;
+}
+
 export default function Dashboard() {
   const [period, setPeriod] = useState<Period>("this_week");
   const [insights, setInsights] = useState<Insights | null>(null);
@@ -161,15 +172,18 @@ export default function Dashboard() {
   const [requests, setRequests] = useState<PaymentRequestView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [holdings, setHoldings] = useState<Holdings | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [i, p, r] = await Promise.all([
+      const [i, p, r, h] = await Promise.all([
         fetch(`/api/insights?period=${period}`, { cache: "no-store" }),
         fetch("/api/plans", { cache: "no-store" }),
         fetch("/api/requests", { cache: "no-store" }),
+        fetch("/api/holdings", { cache: "no-store" }),
       ]);
+      setHoldings(h.ok ? ((await h.json()) as Holdings) : null);
       if (i.status === 401 || i.status === 403) return window.location.replace("/");
       const insightsBody = (await i.json()) as { insights?: Insights; error?: string };
       if (!i.ok || !insightsBody.insights) throw new Error(insightsBody.error ?? "Could not load insights.");
@@ -189,7 +203,8 @@ export default function Dashboard() {
   }, [load]);
 
   async function cancelRequest(id: string) {
-    await fetch(`/api/requests?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    // The local-only guard requires a JSON body on every non-GET request.
+    await fetch(`/api/requests?id=${encodeURIComponent(id)}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" });
     await load();
   }
 
@@ -220,6 +235,23 @@ export default function Dashboard() {
           {loading ? "Loading…" : "Refresh"}
         </button>
       </div>
+
+      {holdings && (
+        <section className="tiles" aria-label="Where your SUI is">
+          <Tile label="In your wallet" value={`${sui(holdings.walletMist)} SUI`} />
+          <Tile label="In your vault" value={`${sui(holdings.vaultMist)} SUI`} sub="What Cipher can spend" />
+          <Tile
+            label="Staked"
+            value={`${sui(holdings.stakedMist)} SUI`}
+            sub={
+              holdings.stakingOn
+                ? `${holdings.stakes} stake${holdings.stakes === 1 ? "" : "s"}${holdings.maxStakedMist ? `, up to ${sui(holdings.maxStakedMist)} SUI allowed` : ""}`
+                : "Staking is off"
+            }
+          />
+          <Tile label="Set aside for swaps" value={`${sui(holdings.tradingMist)} SUI`} sub={holdings.tradingOn ? "Swaps are on" : "Swaps are off"} />
+        </section>
+      )}
 
       {insights && (
         <>

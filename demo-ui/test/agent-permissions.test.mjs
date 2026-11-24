@@ -98,3 +98,26 @@ test('a swap covered by the standing rule is recognized for a same-turn passkey 
   assert.equal(agent.autoSwapProposal(covered), 'prop_0123456789');
   assert.equal(agent.autoSwapProposal('Proposal ID: prop_0123456789\nThe owner must approve this proposal in the app.'), null);
 });
+
+test('wallet refusals reach chat in plain words, never naming internal tools', () => {
+  const presenter = loadTs('lib/server/chat-presenter.ts', {
+    '@/lib/sui': { formatSui: () => '0', getAllBalances: async () => [], createSuiClient: () => ({}) },
+    '@/lib/owner-tx': {},
+    './wallet-mcp': {},
+  });
+  const jovia = addr('4');
+  const say = (text) => presenter.friendlyRefusal(text, { [jovia]: 'Jovia' });
+  const leaks = /propose_|vault_|npm run|\bcall\b|proposal/i;
+  const cases = [
+    'Error: This payment is outside the spending policy: Mandatory on-chain payment policy is not configured. Nothing was sent. It needs the owner\'s approval: call propose_spend, then wait for them to approve it.',
+    `This payment is outside the spending policy: ${jovia} is not on the vault's recipient allowlist. Nothing was sent. It needs the owner's approval: call propose_spend, then wait for them to approve it.`,
+    "Over the vault's per-spend limit. Requested 20 SUI, limit is 10 SUI. Larger payments need the owner's approval: call propose_spend instead.",
+    'The trading sleeve holds 0 SUI, less than 1 SUI. The owner must allocate funds to the sleeve first (npm run owner -- allocate <amount>).',
+    'Something new went wrong. Run it with vault_spend_approved instead.',
+  ];
+  for (const text of cases) assert.doesNotMatch(say(text), leaks, text);
+  assert.match(say(cases[0]), /Only pay trusted recipients directly/);
+  assert.match(say(cases[1]), /^Jovia isn't a trusted recipient/);
+  assert.match(say(cases[2]), /per-payment limit of 10 SUI/);
+  assert.equal(say(cases[4]), 'Something new went wrong.');
+});

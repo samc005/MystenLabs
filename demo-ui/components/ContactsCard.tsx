@@ -42,8 +42,19 @@ export function ContactsCard({ trusted, onChanged }: { trusted: string[]; onChan
   }
 
   async function remove(contact: Contact) {
-    await fetch(`/api/contacts?name=${encodeURIComponent(contact.name)}`, { method: "DELETE" });
+    setError(null);
+    // The local-only guard requires a JSON body on every non-GET request.
+    const response = await fetch(`/api/contacts?name=${encodeURIComponent(contact.name)}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      setError(body.error ?? `Could not remove ${contact.name}.`);
+    }
     await load();
+    onChanged();
   }
 
   return (
