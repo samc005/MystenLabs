@@ -32,6 +32,8 @@ export interface ActivityEntry {
   /** Who started it, from the account's point of view. */
   by: "you" | "cipher" | "someone else";
   success: boolean;
+  /** The user's own note ("pizza"), if they added one. Stored by the app, not on the chain. */
+  note?: string | null;
 }
 
 export interface RawTransaction {
@@ -172,7 +174,7 @@ export function describeTransaction(
 /** The account's most recent transactions, newest first, across its owner wallet and Cipher's key. */
 export async function recentActivity(
   account: { ownerAddress: string; agentAddress: string; vaultId: string },
-  options: { limit?: number; labels?: Record<string, string>; fetchImpl?: typeof fetch } = {},
+  options: { limit?: number; labels?: Record<string, string>; notes?: Record<string, string>; fetchImpl?: typeof fetch } = {},
 ): Promise<ActivityEntry[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const pages = await Promise.all([
@@ -182,7 +184,7 @@ export async function recentActivity(
   const byDigest = new Map<string, RawTransaction>();
   for (const tx of pages.flat()) byDigest.set(tx.digest, tx);
   return [...byDigest.values()]
-    .map((tx) => describeTransaction(tx, account, options.labels))
+    .map((tx) => ({ ...describeTransaction(tx, account, options.labels), note: options.notes?.[tx.digest] ?? null }))
     .sort((a, b) => (b.timestamp ?? "").localeCompare(a.timestamp ?? ""))
     .slice(0, options.limit ?? 15);
 }

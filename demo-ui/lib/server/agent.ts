@@ -119,7 +119,7 @@ export async function runChatTurn(
       const simulation = await mcp.callTool({ name: "estimate_gas", arguments: { transactionBase64: structured.transactionBytes } });
       if (simulation.isError) throw new Error("Simulation failed. Nothing was signed or submitted.");
       output += "\n" + toolResultText(simulation);
-      const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output);
+      const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output, action.note);
       send({ type: "prepared", id, command, summary: output });
     }
     const topUp = result.isError ? topUpFor(toolResultText(result)) : null;

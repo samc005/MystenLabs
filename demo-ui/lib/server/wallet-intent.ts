@@ -26,6 +26,7 @@ const intentProperties = {
   buy: { type: 'string', enum: ['SUI', 'tUSDC'] },
   address: { type: 'string', description: 'save contact: the full 0x address the user wrote.' },
   name: { type: 'string', description: 'save contact: the name the user gave, as written.' },
+  note: { type: 'string', description: 'What the payment is for, in the user\'s words ("pizza"). Only if they said it.' },
 } as const;
 
 const SYSTEM = `You are Cipher, a friendly money assistant inside the user's Sui testnet wallet app. Users type casually: typos, slang, lowercase. Understand what they mean and call exactly one tool.
@@ -34,7 +35,7 @@ Call wallet_intent when the user clearly wants ONE of these actions and every re
 - balance: "how much do I have", "whats my bal", "money left?"
 - vault status: limits, caps, rules, trusted recipients, "how's my vault"
 - validators: list staking validators
-- send: pay/send/transfer SUI to someone (amount, recipient)
+- send: pay/send/transfer SUI to someone (amount, recipient, optional note: what it's for, e.g. "for pizza" -> note "pizza")
 - payment proposal: ONLY when they explicitly ask for their approval on a payment outside their limits (amount, recipient)
 - stake: stake SUI with a validator (amount, validator)
 - quote: price check, "how much X would I get for Y" (amount, sell, buy)

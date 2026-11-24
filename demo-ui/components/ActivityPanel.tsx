@@ -65,6 +65,7 @@ export function ActivityPanel({ refreshKey }: { refreshKey: number }) {
                   {entry.title}
                   {!entry.success && " (failed)"}
                 </span>
+                {entry.note && <span className="activity-note">“{entry.note}”</span>}
                 {entry.amountMist && (
                   <span className={`activity-amount ${entry.direction}`}>
                     {entry.direction === "in" ? "+" : entry.direction === "out" ? "−" : ""}
