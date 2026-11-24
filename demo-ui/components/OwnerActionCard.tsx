@@ -25,12 +25,18 @@ async function post(url: string, body: unknown): Promise<Record<string, unknown>
 async function afterSigned(action: OwnerAction, digest: string, approvalId: string): Promise<string | null> {
   if (action.kind === "pay") {
     try {
-      const result = await post("/api/payments/approved", { digest, approvalId, note: action.note });
+      const result = await post("/api/payments/approved", {
+        digest,
+        approvalId,
+        recipient: action.recipient,
+        amountMist: action.amountMist,
+        note: action.note,
+      });
       return typeof result.digest === "string" ? result.digest : null;
     } catch (reason) {
       throw new Error(
         `The payment didn't go out: ${reason instanceof Error ? reason.message : String(reason)} Nothing was sent. ` +
-          "You can try again for the next 10 minutes without approving again.",
+          "The money stays in your vault. You can try again for the next 10 minutes without approving again.",
       );
     }
   }
@@ -59,9 +65,8 @@ export function describeOwnerAction(action: OwnerAction): { title: string; detai
     return {
       title: `Top up and send ${formatSui(BigInt(action.amountMist))} SUI to ${action.recipientLabel}`,
       detail:
-        `Moves ${formatSui(BigInt(action.depositMist))} SUI from your wallet into your vault and approves exactly this payment ` +
-        `(${action.recipientLabel}, ${formatSui(BigInt(action.amountMist))} SUI${action.note ? `, “${action.note}”` : ""}). ` +
-        "Cipher sends it right after. One approval covers both.",
+        `Moves ${formatSui(BigInt(action.depositMist))} SUI from your wallet into your vault, then Cipher pays ${action.recipientLabel} ` +
+        `${formatSui(BigInt(action.amountMist))} SUI${action.note ? ` (“${action.note}”)` : ""} within your usual limits. One approval covers both.`,
       button: "Approve with passkey and send",
     };
   }

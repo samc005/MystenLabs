@@ -42,6 +42,7 @@ async function setup(t, events) {
       },
     },
     './account-store': store,
+    './chat-presenter': { friendlyRefusal: (text) => text },
   });
   const account = { accountId: '55555555-5555-4555-8555-555555555555', ownerAddress: addr('0').replace(/0+$/, '').padEnd(66, 'd'), agentAddress: addr('e'), packageId: vault.packageId, vaultId: vault.vaultId, agentCapId: addr('f') };
   account.ownerAddress = addr('d');
@@ -141,22 +142,19 @@ test('a plan is recorded only with a passkey approval for exactly its terms', as
   assert.deepEqual(consumed, [await sha(approval.planApproval(addr('1'), '100000000', 2))]);
 });
 
-test('a top-up payment is sent only for one approved intent with a matching passkey approval', async (t) => {
-  const pay = created({ json: { ...created().json, expiry_ms: String(Date.now() + 600_000) } });
-  const { plans, account, consumed } = await setup(t, [pay]);
-  await assert.rejects(plans.sendOwnerApprovedPayment(account, DIGEST, 'forged', null), /Passkey approval/);
-  // A valid approval reaches the signer step (stubbed to fail here), after checking these exact terms.
-  await assert.rejects(plans.sendOwnerApprovedPayment(account, DIGEST, 'ok', null), /SUI_SIGNER_STATE_DIR|no signer in tests/);
+test('a top-up payment needs a passkey approval for exactly that recipient and amount', async (t) => {
+  const { plans, account, consumed } = await setup(t, []);
+  const input = { digest: DIGEST, approvalId: 'ok', recipient: addr('1'), amountMist: '100000000', note: null };
+  await assert.rejects(plans.sendAfterTopUp(account, { ...input, approvalId: 'forged' }), /Passkey approval/);
+  await assert.rejects(plans.sendAfterTopUp(account, { ...input, recipient: 'Sam' }), /full address/);
+  // A valid approval gets as far as preparing the ordinary vault payment (no wallet server in tests).
+  await assert.rejects(plans.sendAfterTopUp(account, input), /no signer in tests/);
   assert.deepEqual(consumed, [await sha(approval.paymentApproval(addr('1'), '100000000'))]);
-  // A retry of the same approved payment needs no new passkey approval.
-  await assert.rejects(plans.sendOwnerApprovedPayment(account, DIGEST, null, null), /SUI_SIGNER_STATE_DIR|no signer in tests/);
+  // A retry of the same payment needs no new prompt...
+  await assert.rejects(plans.sendAfterTopUp(account, { ...input, approvalId: null }), /no signer in tests/);
   assert.equal(consumed.length, 1);
-  // ...but another account cannot ride on it.
-  await assert.rejects(plans.sendOwnerApprovedPayment({ ...account, accountId: '66666666-6666-4666-8666-666666666666' }, DIGEST, null, null), /Passkey approval/);
-
-  const two = await setup(t, [pay, created({ json: { ...pay.json, intent_id: addr('6') } })]);
-  await assert.rejects(two.plans.sendOwnerApprovedPayment(two.account, DIGEST, 'ok', null), /exactly one payment/);
-  const expired = await setup(t, [created({ json: { ...pay.json, expiry_ms: String(Date.now() - 1) } })]);
-  await assert.rejects(expired.plans.sendOwnerApprovedPayment(expired.account, DIGEST, 'ok', null), /expired/);
-  assert.equal(expired.consumed.length, 0, 'an expired approval burns no passkey approval');
+  // ...but a different recipient or amount, or another account, does.
+  await assert.rejects(plans.sendAfterTopUp(account, { ...input, approvalId: null, recipient: addr('2') }), /Passkey approval/);
+  await assert.rejects(plans.sendAfterTopUp(account, { ...input, approvalId: null, amountMist: '999' }), /Passkey approval/);
+  await assert.rejects(plans.sendAfterTopUp({ ...account, accountId: '66666666-6666-4666-8666-666666666666' }, { ...input, approvalId: null }), /Passkey approval/);
 });

@@ -12,15 +12,13 @@ export type OwnerAction =
   | ({ kind: "plan"; recipientLabel: string; note: string | null } & PlanInput)
   | { kind: "cancel_plan"; planId: string; intentIds: string[]; summary: string }
   /**
-   * The vault is short for a payment: one owner transaction moves the difference into the vault
-   * and approves exactly this payment (recipient and amount fixed on-chain). The server then
-   * sends it once it has checked the same passkey approval.
+   * The vault is short for a payment: the owner's transaction moves the difference into the vault,
+   * then the server sends the payment as an ordinary vault payment (trusted recipients and limits
+   * enforced on-chain), using the same passkey approval.
    */
   | { kind: "pay"; recipient: string; recipientLabel: string; amountMist: string; depositMist: string; note: string | null };
 
 const MODULE = "spending_vault";
-/** How long the agent has to send an approved top-up payment. */
-export const PAY_APPROVAL_WINDOW_MS = 10 * 60_000;
 
 export interface VaultRef {
   packageId: string;
@@ -29,30 +27,18 @@ export interface VaultRef {
 }
 
 /** The transaction for an owner action. Pure, so it is unit-tested. */
-export function buildOwnerActionTx(action: OwnerAction, vault: VaultRef, now = Date.now()): Transaction {
+export function buildOwnerActionTx(action: OwnerAction, vault: VaultRef): Transaction {
   if (action.kind === "plan") return buildPlanTx(action, vault);
   if (action.kind === "cancel_plan") return buildCancelPlanTx(action.intentIds, vault);
   const tx = new Transaction();
   const call = (name: string) => `${vault.packageId}::${MODULE}::${name}`;
   if (action.kind === "pay") {
-    const amount = BigInt(action.amountMist);
+    // Only the top-up. The payment that follows is an ordinary vault payment, so every rule
+    // (trusted recipients, limits) still applies to it on-chain.
     const deposit = BigInt(action.depositMist);
     if (!/^0x[0-9a-f]{64}$/.test(action.recipient)) throw new Error("Recipient must be a full address.");
-    if (amount <= 0n || deposit < 0n) throw new Error("Amount must be more than zero.");
-    if (deposit > 0n) {
-      tx.moveCall({ target: call("deposit"), arguments: [tx.object(vault.vaultId), coinWithBalance({ balance: deposit })(tx)] });
-    }
-    tx.moveCall({
-      target: call("create_spend_intent"),
-      arguments: [
-        tx.object(vault.ownerCapId),
-        tx.object(vault.vaultId),
-        tx.pure.address(action.recipient),
-        tx.pure.u64(amount),
-        tx.pure.u64(BigInt(now + PAY_APPROVAL_WINDOW_MS)),
-        tx.object.clock(),
-      ],
-    });
+    if (BigInt(action.amountMist) <= 0n || deposit <= 0n) throw new Error("Amount must be more than zero.");
+    tx.moveCall({ target: call("deposit"), arguments: [tx.object(vault.vaultId), coinWithBalance({ balance: deposit })(tx)] });
     return tx;
   }
   if (action.kind === "deposit") {

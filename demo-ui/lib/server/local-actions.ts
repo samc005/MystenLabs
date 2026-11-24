@@ -1,7 +1,7 @@
 // Chat actions the app handles itself (not wallet-mcp tools). None of them moves money on the
 // server: owner actions are only described here and signed by the owner's wallet in the browser.
 
-import { readVaultPolicy, type PolicyReader } from "@/lib/owner-tx";
+import { readVaultPolicy, type PolicyReader, type VaultPolicy } from "@/lib/owner-tx";
 import { parseToMist } from "@mysten/sui/utils";
 import { createSuiClient, formatSui, getSuiBalance } from "@/lib/sui";
 import { listAccountWallets } from "./wallet-mcp";
@@ -50,25 +50,50 @@ export function topUpFor(errorText: string): { amountMist: string; text: string 
 }
 
 /**
- * A send failed because the vault is short: offer one approval that moves the difference from the
- * owner's wallet and sends the payment. Returns null when the error is not a shortfall.
+ * Why Cipher may not pay `recipient` `amountMist` directly under the vault's rules, or null when it
+ * may. Mirrors the contract's checks so the user hears it before signing anything; the contract
+ * still enforces them on the payment itself.
+ */
+export function paymentBlocker(policy: VaultPolicy, recipient: string, amountMist: bigint, label: string): string | null {
+  if (policy.agent && !policy.agent.payments) return "Payments are turned off for Cipher. You can turn them back on in Account settings.";
+  if (policy.agent && !policy.spend?.enforceRecipients) {
+    return 'Cipher can\'t pay anyone yet. Turn on "Only pay trusted recipients directly" in Account settings, then try again.';
+  }
+  if (policy.spend?.enforceRecipients && !policy.allowedRecipients.includes(recipient.toLowerCase())) {
+    return `${label} isn't a trusted recipient yet, so Cipher can't pay them. Trust them in Account settings → Contacts (or save them here and approve the trust card), then try again.`;
+  }
+  if (amountMist > policy.perTxLimitMist) return `That's over your per-payment limit of ${formatSui(policy.perTxLimitMist)} SUI.`;
+  if (policy.calendar && amountMist > policy.calendar.dayCapMist) return `That's over your daily limit of ${formatSui(policy.calendar.dayCapMist)} SUI.`;
+  if (policy.spend && amountMist > policy.spend.dailyCapMist) return `That's over your daily limit of ${formatSui(policy.spend.dailyCapMist)} SUI.`;
+  return null;
+}
+
+/**
+ * A send failed because the vault is short. If the payment would otherwise be allowed, offer one
+ * approval that tops up the vault and then pays (as an ordinary, rule-checked vault payment).
+ * If it would not be allowed, say why instead: topping up must never get around the rules.
+ * Returns null when the error is not a shortfall on a send.
  */
 export function topUpAndPayFor(
   errorText: string,
   action: WalletAction,
   contacts: Record<string, string>,
-): { text: string; action: OwnerAction } | null {
+  policy: VaultPolicy | null,
+): { text: string; action?: OwnerAction } | null {
   const topUp = topUpFor(errorText);
   const args = action.args as Record<string, string>;
   if (!topUp || action.tool !== "vault_spend" || !/^0x[0-9a-fA-F]{64}$/.test(args.to ?? "")) return null;
   const recipient = args.to.toLowerCase();
   const label = Object.entries(contacts).find(([, address]) => address.toLowerCase() === recipient)?.[0] ?? `${recipient.slice(0, 6)}…${recipient.slice(-4)}`;
-  const amountMist = parseToMist(args.amount).toString();
+  const amountMist = parseToMist(args.amount);
+  if (!policy) return { text: "I couldn't check your vault's rules just now, so nothing was sent. Try again in a moment." };
+  const blocked = paymentBlocker(policy, recipient, amountMist, label);
+  if (blocked) return { text: `That didn't go through. ${blocked} Nothing was sent.` };
   return {
     text:
       `Your vault is ${formatSui(BigInt(topUp.amountMist))} SUI short for that. Approve once below and I'll move the difference ` +
       `from your wallet into your vault and send ${args.amount} SUI to ${label}, no second step.`,
-    action: { kind: "pay", recipient, recipientLabel: label, amountMist, depositMist: topUp.amountMist, note: action.note ?? null },
+    action: { kind: "pay", recipient, recipientLabel: label, amountMist: amountMist.toString(), depositMist: topUp.amountMist, note: action.note ?? null },
   };
 }
 

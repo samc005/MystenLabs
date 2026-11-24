@@ -156,10 +156,12 @@ export async function runChatTurn(
       const id = rememberPrepared(account.accountId, command, structured.transactionBytes, output, action.note);
       send({ type: "prepared", id, command, summary: output });
     }
-    const payWithTopUp = result.isError ? topUpAndPayFor(toolResultText(result), action, contacts) : null;
+    const shortfall = result.isError && action.tool === "vault_spend" && topUpFor(toolResultText(result));
+    const policy = shortfall ? await readVaultPolicy(createSuiClient() as unknown as PolicyReader, account.vaultId).catch(() => null) : null;
+    const payWithTopUp = shortfall ? topUpAndPayFor(toolResultText(result), action, contacts, policy) : null;
     if (payWithTopUp) {
       send({ type: "text", delta: payWithTopUp.text });
-      send({ type: "owner_action", action: payWithTopUp.action });
+      if (payWithTopUp.action) send({ type: "owner_action", action: payWithTopUp.action });
       send({ type: "done", messages: [] });
       return;
     }

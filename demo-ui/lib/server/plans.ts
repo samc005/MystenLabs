@@ -7,7 +7,7 @@
 // the contract enforces each one's recipient, amount, single use and deadline. The scheduler's
 // only freedom is timing inside each payment's window.
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Transaction } from "@mysten/sui/transactions";
@@ -16,7 +16,8 @@ import { createSuiClient } from "@/lib/sui";
 import { MAX_PLAN_PAYMENTS } from "@/lib/plan";
 import { contextFor, type AccountContext } from "./account-context";
 import { listAccounts } from "./accounts";
-import { mutate, read, saveNote, type PaymentPlan } from "./account-store";
+import { labelsFor, mutate, read, saveNote, type PaymentPlan } from "./account-store";
+import { friendlyRefusal } from "./chat-presenter";
 import { connectWalletMcp } from "./agent";
 import { paymentApproval, planApproval } from "@/lib/owner-approval";
 import { consumeApproval, passkeyStatus } from "./passkey";
@@ -122,42 +123,65 @@ export async function recordCancellation(account: AccountContext, planId: string
   });
 }
 
-/** Owner transactions whose payment already passed the passkey check, until their approval expires. */
-const passkeyCleared = new Map<string, number>();
+/** Top-up payments whose passkey approval was already checked, and how far each got. */
+const topUps = new Map<string, { until: number; state: "cleared" | "submitted"; paid?: string }>();
 
 /**
- * Sends a one-off payment the owner approved in a single step: their transaction topped up the
- * vault and created exactly one SpendIntent, and their passkey approved that recipient and
- * amount. The server reads both terms from the chain, checks the passkey approval against them,
- * then submits spend_approved. No second prompt.
+ * Sends a payment right after the owner topped up the vault. The owner's transaction only moved
+ * money into the vault; the payment itself is an ordinary vault payment, so the contract enforces
+ * every rule exactly as for any other payment: trusted recipients, per-payment limit, daily and
+ * weekly caps. The passkey approved this recipient and amount once; a retry after a failure that
+ * happened before anything was submitted needs no new prompt.
  */
-export async function sendOwnerApprovedPayment(
+export async function sendAfterTopUp(
   account: AccountContext,
-  digest: string,
-  approvalId: string | null,
-  note: string | null,
+  input: { digest: string; approvalId: string | null; recipient: string; amountMist: string; note: string | null },
 ): Promise<{ digest: string; recipient: string; amountMist: string }> {
   if ((await passkeyStatus()).revoked) throw new Error("Wallet access is locked.");
-  const created = await ownerEvents(account, digest, "SpendIntentCreated");
-  if (created.length !== 1) throw new Error("That transaction should approve exactly one payment.");
-  const [event] = created;
-  const intentId = normalizeSuiAddress(String(event.intent_id));
-  const recipient = normalizeSuiAddress(String(event.recipient));
-  const amountMist = String(event.amount);
-  const expiry = Number(event.expiry_ms);
-  if (expiry <= Date.now()) throw new Error("That payment approval has expired. Nothing was sent.");
-  // The passkey is checked once per approved payment. A retry of the same owner transaction
-  // (say the signer was briefly down) needs no new prompt: the on-chain approval it runs is
-  // single use, fixed to this recipient and amount, so retrying can never pay twice.
-  const key = `${account.accountId}:${digest}`;
-  for (const [entry, until] of passkeyCleared) if (until <= Date.now()) passkeyCleared.delete(entry);
-  if (!passkeyCleared.has(key)) {
-    await consumeApproval(approvalId ?? "", approvalHash(paymentApproval(recipient, amountMist)));
-    passkeyCleared.set(key, expiry);
+  const recipient = input.recipient.toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(recipient)) throw new Error("Recipient must be a full address.");
+  if (!/^[1-9][0-9]{0,18}$/.test(input.amountMist)) throw new Error("Invalid amount.");
+  if (!/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(input.digest)) throw new Error("Not a transaction digest.");
+
+  const key = `${account.accountId}:${input.digest}:${recipient}:${input.amountMist}`;
+  for (const [entry, value] of topUps) if (value.until <= Date.now()) topUps.delete(entry);
+  const known = topUps.get(key);
+  if (known?.paid) return { digest: known.paid, recipient, amountMist: input.amountMist };
+  if (known?.state === "submitted") {
+    throw new Error("This payment may already have gone out. Check Recent transactions before trying again.");
   }
-  const paid = await submitPlanPayment(account, intentId);
-  if (note) await saveNote(account.accountId, paid, note).catch(() => undefined);
-  return { digest: paid, recipient, amountMist };
+  if (!known) {
+    await consumeApproval(input.approvalId ?? "", approvalHash(paymentApproval(recipient, input.amountMist)));
+    topUps.set(key, { until: Date.now() + 10 * 60_000, state: "cleared" });
+  }
+
+  // Wait for the top-up so the vault holds the money before the payment is prepared.
+  const topUp = await createSuiClient().waitForTransaction({ digest: input.digest, timeout: 30_000 });
+  if (topUp.$kind !== "Transaction") throw new Error("The top-up failed on-chain, so nothing was sent.");
+
+  const mcp = await connectWalletMcp(account);
+  try {
+    const prepared = await mcp.callTool({ name: "vault_spend", arguments: { amount: formatSuiAmount(input.amountMist), to: recipient } });
+    const bytes = (prepared.structuredContent as { transactionBytes?: unknown } | undefined)?.transactionBytes;
+    if (prepared.isError || typeof bytes !== "string") {
+      const text = (prepared.content as { type: string; text?: string }[] | undefined)?.find((part) => part.type === "text")?.text ?? "";
+      throw new Error(friendlyRefusal(text, await labelsFor(account.accountId).catch(() => ({}))));
+    }
+    const paid = await signAndSubmit(mcp, bytes, `topup-${randomUUID()}`, () => {
+      topUps.set(key, { ...topUps.get(key)!, state: "submitted" });
+    });
+    topUps.set(key, { ...topUps.get(key)!, paid });
+    if (input.note) await saveNote(account.accountId, paid, input.note).catch(() => undefined);
+    return { digest: paid, recipient, amountMist: input.amountMist };
+  } finally {
+    await mcp.close().catch(() => undefined);
+  }
+}
+
+function formatSuiAmount(mist: string): string {
+  const value = BigInt(mist);
+  const fraction = (value % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return `${value / 1_000_000_000n}${fraction ? `.${fraction}` : ""}`;
 }
 
 /**
@@ -167,12 +191,6 @@ export async function sendOwnerApprovedPayment(
  * signing the plan.
  */
 async function submitPlanPayment(account: AccountContext, intentId: string): Promise<string> {
-  const directory = process.env.SUI_SIGNER_STATE_DIR;
-  if (!directory || !path.isAbsolute(directory)) throw new Error("Configure the trusted backend SUI_SIGNER_STATE_DIR.");
-  const info = await stat(directory);
-  if (!info.isDirectory() || info.mode & 0o077 || info.uid !== process.getuid?.()) {
-    throw new Error("Signer state must be private and owned by the trusted backend user.");
-  }
   const client = createSuiClient();
   const tx = new Transaction();
   tx.setSender(account.agentAddress);
@@ -194,27 +212,48 @@ async function submitPlanPayment(account: AccountContext, intentId: string): Pro
     arguments: [tx.object(account.agentCapId), tx.object(account.vaultId), tx.pure.id(intentId), tx.object.clock()],
   });
   const bytes = toBase64(await tx.build({ client }));
-  const id = `plan-${intentId.slice(2, 18)}-${Date.now()}`;
-  const input = { network: "testnet", proposalId: id, transactionBytes: bytes, policyDecision: { id, allowed: true } };
   const mcp = await connectWalletMcp(account);
   try {
-    const simulation = await mcp.callTool({ name: "estimate_gas", arguments: { transactionBase64: bytes } });
-    if (simulation.isError) throw new Error("The payment failed in simulation (the vault may be short or paused).");
-    const approvals = path.join(directory, "approvals");
-    await mkdir(approvals, { recursive: true, mode: 0o700 });
-    const temp = path.join(approvals, `${id}.tmp`);
-    await writeFile(temp, JSON.stringify({ ...input, expiresAtMs: Date.now() + 30_000 }), { mode: 0o600, flag: "wx" });
-    await rename(temp, path.join(approvals, `${id}.json`));
-    const result = await mcp.callTool({ name: "execute_approved_transaction", arguments: input });
-    const confirmation = result.structuredContent as { digest?: unknown; confirmed?: unknown } | undefined;
-    if (result.isError || typeof confirmation?.digest !== "string") {
-      const detail = (result.content as { type: string; text?: string }[] | undefined)?.find((part) => part.type === "text")?.text;
-      throw new Error(`The signer did not confirm the payment${detail ? ` (${detail.split("\n")[0].slice(0, 200)})` : ""}.`);
-    }
-    return confirmation.digest;
+    return await signAndSubmit(mcp, bytes, `plan-${intentId.slice(2, 18)}-${Date.now()}`);
   } finally {
     await mcp.close().catch(() => undefined);
   }
+}
+
+/**
+ * Simulates exact transaction bytes, writes the one-shot approval file the isolated signer
+ * requires, and submits. `onSubmitting` runs just before submission, for callers that must not
+ * retry once something may have reached the chain.
+ */
+async function signAndSubmit(
+  mcp: Awaited<ReturnType<typeof connectWalletMcp>>,
+  bytes: string,
+  id: string,
+  onSubmitting?: () => void,
+): Promise<string> {
+  const directory = process.env.SUI_SIGNER_STATE_DIR;
+  if (!directory || !path.isAbsolute(directory)) throw new Error("Configure the trusted backend SUI_SIGNER_STATE_DIR.");
+  const info = await stat(directory);
+  if (!info.isDirectory() || info.mode & 0o077 || info.uid !== process.getuid?.()) {
+    throw new Error("Signer state must be private and owned by the trusted backend user.");
+  }
+  const input = { network: "testnet", proposalId: id, transactionBytes: bytes, policyDecision: { id, allowed: true } };
+  const simulation = await mcp.callTool({ name: "estimate_gas", arguments: { transactionBase64: bytes } });
+  if (simulation.isError) throw new Error("The payment failed in simulation (the vault may be short or paused).");
+  const approvals = path.join(directory, "approvals");
+  await mkdir(approvals, { recursive: true, mode: 0o700 });
+  const temp = path.join(approvals, `${id}.tmp`);
+  await writeFile(temp, JSON.stringify({ ...input, expiresAtMs: Date.now() + 30_000 }), { mode: 0o600, flag: "wx" });
+  await rename(temp, path.join(approvals, `${id}.json`));
+  const result = await mcp.callTool({ name: "execute_approved_transaction", arguments: input });
+  const confirmation = result.structuredContent as { digest?: unknown; confirmed?: unknown } | undefined;
+  if (result.isError || typeof confirmation?.digest !== "string") {
+    const detail = (result.content as { type: string; text?: string }[] | undefined)?.find((part) => part.type === "text")?.text ?? "";
+    // A receipt in the error means it reached the chain (or might have): never invite a retry.
+    if (/digest|receipt|submitted|suiscan|explorer/i.test(detail)) onSubmitting?.();
+    throw new Error(`The signer did not confirm the payment${detail ? ` (${detail.split("\n")[0].slice(0, 200)})` : ""}.`);
+  }
+  return confirmation.digest;
 }
 
 let running = false;

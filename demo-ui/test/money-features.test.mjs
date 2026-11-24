@@ -81,28 +81,33 @@ test('a payment that fails only because the vault is short offers the exact top-
   assert.match(offer.text, /move 0.41 SUI from your wallet/);
   assert.equal(local.topUpFor('Recipient is not on the allowlist.'), null);
 
-  // A short vault on a send offers one approval that tops up and pays, labelled with the contact.
+  // A short vault on a send offers one approval that tops up and pays, but only when the payment
+  // itself would be allowed. Topping up never gets around trusted recipients or limits.
   const send = { tool: 'vault_spend', args: { amount: '0.5', to: A }, note: 'pizza' };
   const short = 'The vault only holds 0.09 SUI, which is less than the requested 0.5 SUI.';
-  const pay = local.topUpAndPayFor(short, send, { Jovia: A });
+  const rules = { perTxLimitMist: 10_000_000_000n, spend: { dailyCapMist: 10_000_000_000n, enforceRecipients: true }, calendar: { dayCapMist: 10_000_000_000n, weekCapMist: 10_000_000_000n }, allowedRecipients: [A], agent: { payments: true, staking: false, trading: false } };
+  const pay = local.topUpAndPayFor(short, send, { Jovia: A }, rules);
   assert.deepEqual(pay.action, { kind: 'pay', recipient: A, recipientLabel: 'Jovia', amountMist: '500000000', depositMist: '410000000', note: 'pizza' });
   assert.match(pay.text, /no second step/);
-  assert.equal(local.topUpAndPayFor('Recipient is not on the allowlist.', send, {}), null);
-  assert.equal(local.topUpAndPayFor(short, { tool: 'stake', args: { amount: '1', validator: A } }, {}), null);
+
+  const stranger = local.topUpAndPayFor(short, { ...send, args: { amount: '0.05', to: B } }, {}, rules);
+  assert.equal(stranger.action, undefined, 'no top-up card for someone who is not trusted');
+  assert.match(stranger.text, /isn't a trusted recipient/);
+  assert.equal(local.topUpAndPayFor(short, send, {}, { ...rules, spend: { ...rules.spend, enforceRecipients: false } }).action, undefined);
+  assert.match(local.topUpAndPayFor(short, send, {}, { ...rules, perTxLimitMist: 100n }).text, /per-payment limit/);
+  assert.match(local.topUpAndPayFor(short, send, {}, { ...rules, calendar: { dayCapMist: 100n, weekCapMist: 100n } }).text, /daily limit/);
+  assert.equal(local.topUpAndPayFor(short, send, {}, null).action, undefined, 'no card when the rules cannot be read');
+  assert.equal(local.topUpAndPayFor('Recipient is not on the allowlist.', send, {}, rules), null);
+  assert.equal(local.topUpAndPayFor(short, { tool: 'stake', args: { amount: '1', validator: A } }, {}, rules), null);
 });
 
-test('a top-up payment is one owner transaction: deposit, then one approval for that payment', () => {
+test('the top-up transaction only moves money into the vault; it approves no payment', () => {
   const owner = loadTs('lib/owner-actions.ts');
   const vault = { packageId: `0x${'a'.repeat(64)}`, vaultId: `0x${'b'.repeat(64)}`, ownerCapId: `0x${'c'.repeat(64)}` };
   const action = { kind: 'pay', recipient: A, recipientLabel: 'Jovia', amountMist: '500000000', depositMist: '410000000', note: null };
-  const now = 1_700_000_000_000;
-  const data = owner.buildOwnerActionTx(action, vault, now).getData();
-  const calls = data.commands.filter((c) => c.MoveCall).map((c) => c.MoveCall.function);
-  assert.deepEqual(calls, ['deposit', 'create_spend_intent']);
-  const values = data.inputs.filter((i) => i.Pure).map((i) => Buffer.from(i.Pure.bytes, 'base64'));
-  assert.ok(values.some((b) => b.length === 8 && b.readBigUInt64LE() === BigInt(now + owner.PAY_APPROVAL_WINDOW_MS)), 'approval expires after the window');
-  const noTopUp = owner.buildOwnerActionTx({ ...action, depositMist: '0' }, vault, now).getData();
-  assert.deepEqual(noTopUp.commands.filter((c) => c.MoveCall).map((c) => c.MoveCall.function), ['create_spend_intent']);
+  const calls = owner.buildOwnerActionTx(action, vault).getData().commands.filter((c) => c.MoveCall).map((c) => c.MoveCall.function);
+  assert.deepEqual(calls, ['deposit']);
+  assert.throws(() => owner.buildOwnerActionTx({ ...action, depositMist: '0' }, vault), /more than zero/);
   assert.throws(() => owner.buildOwnerActionTx({ ...action, recipient: 'Jovia' }, vault), /full address/);
 });
 
